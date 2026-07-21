@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Attendance } from '../attendances/entities/attendance.entity';
+import { Grade } from '../grades/entities/grade.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
 import { SectionChange } from './entities/section-change.entity';
 import { StudentAcademicHistory } from './entities/student-academic-history.entity';
@@ -8,7 +9,11 @@ import { StudentDocument } from './entities/student-document.entity';
 import { Student } from './entities/student.entity';
 import { StudentsController } from './students.controller';
 import { StudentsService } from './students.service';
-import { ClassroomsModule } from '../classrooms/classrooms.module';
+import { MaestrosModule } from '../maestros/maestros.module';
+import { HorarioBlock } from '../horarios/entities/horario-block.entity';
+import { Docente } from '../maestros/docentes/entities/docente.entity';
+import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
+import { User } from '../users/entities/user.entity';
 
 @Module({
   imports: [
@@ -19,8 +24,13 @@ import { ClassroomsModule } from '../classrooms/classrooms.module';
       StudentDocument,
       StudentAcademicHistory,
       Attendance,
+      Grade,
+      HorarioBlock,
+      Docente,
+      CurriculumSubject,
+      User,
     ]),
-    ClassroomsModule,
+    MaestrosModule,
   ],
   controllers: [StudentsController],
   providers: [StudentsService],

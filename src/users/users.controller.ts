@@ -8,12 +8,14 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { BulkImportUsersDto } from './dto/bulk-import-users.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
+@RequirePermiso('admin.usuarios')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 

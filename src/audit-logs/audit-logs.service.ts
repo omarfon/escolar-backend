@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { AUDIT_LOG_RETENTION_DAYS } from './audit-logs.constants';
 import { CreateAuditLogDto } from './dto/audit-log.dto';
 import {
   AuditAccion,
@@ -113,6 +114,23 @@ export class AuditLogsService {
     const log = await this.auditRepo.findOneBy({ id });
     if (!log) throw new NotFoundException(`Registro de bitácora ${id} no encontrado`);
     return this.toResponse(log);
+  }
+
+  /** Elimina registros más antiguos que el periodo de retención (15 días). */
+  async purgeExpired(
+    retentionDays = AUDIT_LOG_RETENTION_DAYS,
+  ): Promise<number> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - retentionDays);
+
+    const result = await this.auditRepo
+      .createQueryBuilder()
+      .delete()
+      .from(AuditLog)
+      .where('"createdAt" < :cutoff', { cutoff })
+      .execute();
+
+    return result.affected ?? 0;
   }
 
   private buildResumen(rows: AuditLog[]): AuditLogResumen {

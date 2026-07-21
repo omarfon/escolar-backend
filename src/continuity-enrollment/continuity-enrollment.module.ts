@@ -7,7 +7,7 @@ import { Student } from '../students/entities/student.entity';
 import { StudentAcademicHistory } from '../students/entities/student-academic-history.entity';
 import { Grade } from '../grades/entities/grade.entity';
 import { AuthModule } from '../auth/auth.module';
-import { ClassroomsModule } from '../classrooms/classrooms.module';
+import { MaestrosModule } from '../maestros/maestros.module';
 
 @Module({
   imports: [
@@ -18,7 +18,7 @@ import { ClassroomsModule } from '../classrooms/classrooms.module';
       Grade,
     ]),
     AuthModule,
-    ClassroomsModule,
+    MaestrosModule,
   ],
   controllers: [ContinuityEnrollmentController],
   providers: [ContinuityEnrollmentService],

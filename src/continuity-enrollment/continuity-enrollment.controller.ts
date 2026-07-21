@@ -16,12 +16,10 @@ import {
   GenerateContinuityDto,
   RejectContinuityDto,
 } from './dto/continuity-enrollment.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { PermisoGuard } from '../auth/guards/permiso.guard';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { RequestUser } from '../auth/interfaces/request-user.interface';
-
 @Controller('continuity-enrollment')
+@RequirePermiso('matricula.ver')
 export class ContinuityEnrollmentController {
   constructor(private readonly continuityService: ContinuityEnrollmentService) {}
 
@@ -45,6 +43,7 @@ export class ContinuityEnrollmentController {
   }
 
   @Post('generate')
+  @RequirePermiso('matricula.crear', 'matricula.aprobar')
   generate(@Body() dto: GenerateContinuityDto, @Req() req: { user?: RequestUser }) {
     const generadoPor =
       dto.generadoPor?.trim() ||
@@ -54,7 +53,6 @@ export class ContinuityEnrollmentController {
   }
 
   @Post('approve-all')
-  @UseGuards(JwtAuthGuard, PermisoGuard)
   @RequirePermiso('matricula.aprobar')
   approveAll(
     @Body() dto: ApproveAllContinuityDto,
@@ -65,7 +63,6 @@ export class ContinuityEnrollmentController {
   }
 
   @Patch(':id/approve')
-  @UseGuards(JwtAuthGuard, PermisoGuard)
   @RequirePermiso('matricula.aprobar')
   approve(
     @Param('id') id: string,
@@ -77,7 +74,6 @@ export class ContinuityEnrollmentController {
   }
 
   @Patch(':id/reject')
-  @UseGuards(JwtAuthGuard, PermisoGuard)
   @RequirePermiso('matricula.aprobar')
   reject(@Param('id') id: string, @Body() dto: RejectContinuityDto) {
     return this.continuityService.reject(+id, dto);

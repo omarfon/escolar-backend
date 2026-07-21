@@ -6,7 +6,15 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Grade } from '../grades/entities/grade.entity';
+import { CursosMaestrosService } from '../maestros/cursos/cursos.service';
+import { FormulasEvaluacionMaestrosService } from '../maestros/formulas-evaluacion/formulas-evaluacion.service';
+import {
+  calcNotaPonderada,
+  nivelFromNota,
+} from '../maestros/formulas-evaluacion/evaluation-formula.util';
+import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import { StudentsService } from '../students/students.service';
+import { listStudentsForAula } from '../students/students-dedupe.util';
 import { ApproveActaDto, GenerateActaDto } from './dto/acta.dto';
 import {
   ActaAlumnoRow,
@@ -37,6 +45,14 @@ export interface ActaDetail extends ActaListItem {
   snapshot: ActaSnapshot;
   cursos: string[];
   alumnos: ActaAlumnoRow[];
+  bimestreActual: number;
+  bimestresTerminados: number[];
+}
+
+export interface ActasBimestresDisponibles {
+  anioEscolar: number;
+  bimestreActual: number;
+  bimestresTerminados: number[];
 }
 
 @Injectable()
@@ -47,7 +63,18 @@ export class ActasService {
     @InjectRepository(Grade)
     private readonly gradesRepo: Repository<Grade>,
     private readonly studentsService: StudentsService,
+    private readonly formulasService: FormulasEvaluacionMaestrosService,
+    private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly cursosMaestrosService: CursosMaestrosService,
   ) {}
+
+  async getBimestresDisponibles(): Promise<ActasBimestresDisponibles> {
+    const anioEscolar = await this.periodosService.resolveAnioEscolarActual();
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    const bimestresTerminados =
+      await this.periodosService.resolveBimestresTerminados(anioEscolar);
+    return { anioEscolar, bimestreActual, bimestresTerminados };
+  }
 
   async findAll(query?: {
     nivel?: string;
@@ -70,11 +97,14 @@ export class ActasService {
 
   async findOne(id: number): Promise<ActaDetail> {
     const acta = await this.getOrFail(id);
-    return this.toDetail(acta);
+    return await this.toDetail(acta);
   }
 
   async generate(dto: GenerateActaDto): Promise<ActaDetail> {
-    const anio = dto.anio?.trim() || '2026';
+    const anioEscolar = await this.periodosService.resolveAnioEscolarActual();
+    const anio = dto.anio?.trim() || String(anioEscolar);
+    const bimestresTerminados =
+      await this.periodosService.resolveBimestresTerminados(+anio);
 
     const existing = await this.actaRepo.findOne({
       where: {
@@ -86,9 +116,19 @@ export class ActasService {
       },
     });
 
-    if (existing && existing.estado !== 'borrador') {
+    if (!existing && !bimestresTerminados.includes(dto.bimestre)) {
+      const lista =
+        bimestresTerminados.length > 0
+          ? bimestresTerminados.map((b) => `${b}°`).join(', ')
+          : 'ninguno';
       throw new BadRequestException(
-        'Ya existe un acta generada para esta seccion y bimestre',
+        `El acta se genera al concluir el bimestre. Bimestres cerrados: ${lista}.`,
+      );
+    }
+
+    if (existing?.estado === 'cerrada') {
+      throw new BadRequestException(
+        'El acta de este salón y bimestre ya está cerrada y no puede modificarse',
       );
     }
 
@@ -101,20 +141,29 @@ export class ActasService {
 
     if (!snapshot.alumnos.length) {
       throw new BadRequestException(
-        'No hay alumnos con notas para generar el acta',
+        'No hay alumnos matriculados en este salón',
+      );
+    }
+
+    const conNotas = snapshot.alumnos.some((a) =>
+      Object.values(a.notas).some((n) => n !== null),
+    );
+    if (!conNotas) {
+      throw new BadRequestException(
+        'No hay notas registradas en este bimestre para generar el acta',
       );
     }
 
     if (existing) {
       existing.estado = 'generada';
-      existing.docente = dto.docente?.trim() || 'Docente titular';
-      existing.observaciones = dto.observaciones?.trim() || '';
+      existing.docente = dto.docente?.trim() || existing.docente || 'Docente titular';
+      existing.observaciones = dto.observaciones?.trim() ?? existing.observaciones;
       existing.snapshot = snapshot;
       existing.approvedAt = null;
       existing.closedAt = null;
       existing.aprobadoPor = '';
       const saved = await this.actaRepo.save(existing);
-      return this.toDetail(saved);
+      return await this.toDetail(saved);
     }
 
     const saved = await this.actaRepo.save(
@@ -131,7 +180,7 @@ export class ActasService {
       }),
     );
 
-    return this.toDetail(saved);
+    return await this.toDetail(saved);
   }
 
   async approve(id: number, dto: ApproveActaDto): Promise<ActaDetail> {
@@ -143,7 +192,7 @@ export class ActasService {
     acta.aprobadoPor = dto.aprobadoPor?.trim() || 'Dirección';
     acta.approvedAt = new Date();
     const saved = await this.actaRepo.save(acta);
-    return this.toDetail(saved);
+    return await this.toDetail(saved);
   }
 
   async close(id: number): Promise<ActaDetail> {
@@ -154,7 +203,7 @@ export class ActasService {
     acta.estado = 'cerrada';
     acta.closedAt = new Date();
     const saved = await this.actaRepo.save(acta);
-    return this.toDetail(saved);
+    return await this.toDetail(saved);
   }
 
   async remove(id: number) {
@@ -172,46 +221,114 @@ export class ActasService {
     seccion: string,
     bimestre: number,
   ): Promise<ActaSnapshot> {
-    const students = (await this.studentsService.findAll()).filter(
-      (s) =>
-        s.activo &&
-        s.nivel === nivel &&
-        s.grado === grado &&
-        s.seccion === seccion,
+    const students = listStudentsForAula(
+      await this.studentsService.findAll(),
+      nivel,
+      grado,
+      seccion,
     );
 
+    if (!students.length) {
+      return {
+        cursos: [],
+        alumnos: [],
+        resumen: { total: 0, aprobados: 0, desaprobados: 0, promedioAula: null },
+      };
+    }
+
+    const cursosMaestros = await this.cursosMaestrosService.findAll({
+      activo: true,
+      nivel,
+    });
+    const catalogCursos = cursosMaestros
+      .filter((c) => (c.grados ?? []).includes(grado))
+      .map((c) => c.nombre);
+
     const allGrades = await this.gradesRepo.find({ where: { bimestre } });
-    const cursosSet = new Set<string>();
+    const fromGrades = [
+      ...new Set(
+        allGrades
+          .filter((g) => students.some((s) => s.id === g.studentId))
+          .map((g) => g.curso),
+      ),
+    ];
+
+    const cursos = [...new Set([...catalogCursos, ...fromGrades])].sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+
+    const formulaCache = new Map<
+      string,
+      Awaited<ReturnType<FormulasEvaluacionMaestrosService['resolve']>>
+    >();
     const alumnos: ActaAlumnoRow[] = [];
 
-    for (const student of students) {
-      const studentGrades = allGrades.filter((g) => g.studentId === student.id);
-      const byCurso = new Map<string, Grade[]>();
+    const resolveFormula = async (curso: string) => {
+      const key = `${nivel}|${grado}|${curso}|${bimestre}`;
+      if (!formulaCache.has(key)) {
+        formulaCache.set(
+          key,
+          await this.formulasService.resolve({ nivel, grado, curso, bimestre }),
+        );
+      }
+      return formulaCache.get(key)!;
+    };
 
-      for (const g of studentGrades) {
-        cursosSet.add(g.curso);
-        const list = byCurso.get(g.curso) ?? [];
-        list.push(g);
-        byCurso.set(g.curso, list);
+    const calcCursoPonderado = async (
+      studentId: number,
+      curso: string,
+    ): Promise<{
+      nota: number | null;
+      escala: Awaited<
+        ReturnType<FormulasEvaluacionMaestrosService['resolve']>
+      >['escalaLogro'];
+    }> => {
+      const formula = await resolveFormula(curso);
+      const studentGrades = allGrades.filter(
+        (g) => g.studentId === studentId && g.curso === curso,
+      );
+      const notasCalc: Record<string, number | null> = {};
+
+      for (const comp of formula.componentes) {
+        const match = studentGrades.find(
+          (g) =>
+            g.componenteCodigo === comp.codigo ||
+            (!g.componenteCodigo && g.tipo === mapTipoFromCodigo(comp.codigo)),
+        );
+        notasCalc[comp.codigo] = match?.nota ?? null;
       }
 
+      return {
+        nota: calcNotaPonderada(formula.componentes, notasCalc),
+        escala: formula.escalaLogro,
+      };
+    };
+
+    for (const student of students) {
       const notas: Record<string, number | null> = {};
       const courseAvgs: number[] = [];
+      let escalaReferencia: Awaited<
+        ReturnType<FormulasEvaluacionMaestrosService['resolve']>
+      >['escalaLogro'] | null = null;
 
-      for (const [curso, items] of byCurso) {
-        const avg = avgNumbers(items.map((i) => i.nota));
-        notas[curso] = avg;
-        if (avg !== null) courseAvgs.push(avg);
+      for (const curso of cursos) {
+        const { nota, escala } = await calcCursoPonderado(student.id, curso);
+        notas[curso] = nota;
+        if (nota !== null) {
+          courseAvgs.push(nota);
+          escalaReferencia ??= escala;
+        }
       }
 
       const promedio = avgNumbers(courseAvgs);
-      const nivelLogro = promedio !== null ? nivelFromNota(promedio) : null;
+      const nivelLogro =
+        promedio !== null && escalaReferencia
+          ? nivelFromNota(promedio, escalaReferencia)
+          : null;
       let situacion: ActaAlumnoRow['situacion'] = 'sin_notas';
       if (promedio !== null) {
         situacion = promedio >= 11 ? 'aprobado' : 'desaprobado';
       }
-
-      if (Object.keys(notas).length === 0) continue;
 
       alumnos.push({
         studentId: student.id,
@@ -223,8 +340,7 @@ export class ActasService {
       });
     }
 
-    alumnos.sort((a, b) => a.estudiante.localeCompare(b.estudiante));
-    const cursos = [...cursosSet].sort();
+    alumnos.sort((a, b) => a.estudiante.localeCompare(b.estudiante, 'es'));
 
     const promedios = alumnos
       .map((a) => a.promedio)
@@ -254,7 +370,7 @@ export class ActasService {
       estado: acta.estado,
       docente: acta.docente,
       aprobadoPor: acta.aprobadoPor,
-      totalAlumnos: snap?.resumen.total ?? 0,
+      totalAlumnos: snap?.alumnos?.length ?? snap?.resumen.total ?? 0,
       aprobados: snap?.resumen.aprobados ?? 0,
       desaprobados: snap?.resumen.desaprobados ?? 0,
       promedioAula: snap?.resumen.promedioAula ?? null,
@@ -265,19 +381,24 @@ export class ActasService {
     };
   }
 
-  private toDetail(acta: EvaluationActa): ActaDetail {
+  private async toDetail(acta: EvaluationActa): Promise<ActaDetail> {
     const base = this.toListItem(acta);
     const snap = acta.snapshot ?? {
       cursos: [],
       alumnos: [],
       resumen: { total: 0, aprobados: 0, desaprobados: 0, promedioAula: null },
     };
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    const bimestresTerminados =
+      await this.periodosService.resolveBimestresTerminados(+acta.anio);
     return {
       ...base,
       observaciones: acta.observaciones,
       snapshot: snap,
       cursos: snap.cursos,
       alumnos: snap.alumnos,
+      bimestreActual,
+      bimestresTerminados,
     };
   }
 
@@ -300,9 +421,9 @@ function avgNumbers(values: number[]): number | null {
   return Math.round((sum / values.length) * 10) / 10;
 }
 
-function nivelFromNota(nota: number): string {
-  if (nota >= 17.5) return 'AD';
-  if (nota >= 14) return 'A';
-  if (nota >= 11) return 'B';
-  return 'C';
+function mapTipoFromCodigo(codigo: string): Grade['tipo'] {
+  const lower = codigo.toLowerCase();
+  if (lower.includes('final')) return 'final';
+  if (lower.includes('parcial') || lower.includes('examen')) return 'partial';
+  return 'daily';
 }

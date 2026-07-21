@@ -15,8 +15,10 @@ import {
   CreateGradeSectionDto,
   UpdateGradeSectionDto,
 } from './dto/grade-section.dto';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('institution')
+@RequirePermiso('admin.institucional')
 export class InstitutionController {
   constructor(private readonly institutionService: InstitutionService) {}
 

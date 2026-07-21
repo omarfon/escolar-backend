@@ -13,8 +13,10 @@ import {
   UpdateConductIncidentDto,
 } from './dto/conduct-incident.dto';
 import { ConductIncidentsService } from './conduct-incidents.service';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('conduct-incidents')
+@RequirePermiso('estudiantes.ver', 'evaluacion.ver')
 export class ConductIncidentsController {
   constructor(private readonly conductService: ConductIncidentsService) {}
 
@@ -34,6 +36,8 @@ export class ConductIncidentsController {
     @Query('nivel') nivel?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('resumenPage') resumenPage?: string,
+    @Query('resumenPageSize') resumenPageSize?: string,
   ) {
     return this.conductService.findAllPaginated(
       {
@@ -47,6 +51,8 @@ export class ConductIncidentsController {
       },
       page ? +page : 1,
       pageSize ? +pageSize : 10,
+      resumenPage ? +resumenPage : 1,
+      resumenPageSize ? +resumenPageSize : 10,
     );
   }
 

@@ -1,5 +1,7 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
+export type SectionChangeEstado = 'completado';
+
 @Entity('section_changes')
 export class SectionChange {
   @PrimaryGeneratedColumn()
@@ -29,8 +31,17 @@ export class SectionChange {
   @Column({ length: 300, default: '' })
   observacion: string;
 
+  @Column({ length: 120, default: '' })
+  autorizadoPor: string;
+
   @Column({ length: 80, default: 'Sistema' })
   realizadoPor: string;
+
+  @Column({ type: 'int', nullable: true })
+  anioEscolar: number | null;
+
+  @Column({ length: 15, default: 'completado' })
+  estado: SectionChangeEstado;
 
   @CreateDateColumn()
   createdAt: Date;

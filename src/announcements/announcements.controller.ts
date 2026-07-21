@@ -2,12 +2,15 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { AnnouncementsService } from './announcements.service';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('announcements')
+@RequirePermiso('comunicados.ver')
 export class AnnouncementsController {
   constructor(private readonly announcementsService: AnnouncementsService) {}
 
   @Post()
+  @RequirePermiso('comunicados.enviar')
   create(@Body() createAnnouncementDto: CreateAnnouncementDto) {
     return this.announcementsService.create(createAnnouncementDto);
   }

@@ -16,8 +16,8 @@ export class ConductIncident {
   @Column({ type: 'int' })
   studentId: number;
 
-  @Column({ length: 20 })
-  tipo: ConductIncidentTipo;
+  @Column({ length: 40 })
+  tipo: string;
 
   @Column({ type: 'text' })
   descripcion: string;

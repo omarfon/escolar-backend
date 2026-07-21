@@ -11,7 +11,11 @@ export type ResourceTipo =
   | 'lectura'
   | 'video'
   | 'enlace'
-  | 'evaluacion';
+  | 'evaluacion'
+  | 'imagen'
+  | 'documento'
+  | 'excel'
+  | 'ppt';
 
 @Entity('teacher_resources')
 export class TeacherResource {
@@ -56,6 +60,12 @@ export class TeacherResource {
 
   @Column({ length: 200, default: '' })
   nombreArchivo: string;
+
+  @Column({ length: 120, default: '' })
+  mimeType: string;
+
+  @Column({ type: 'int', default: 0 })
+  tamanoBytes: number;
 
   @Column({ default: true })
   visible: boolean;

@@ -26,8 +26,8 @@ import {
   ContinuityCandidateResponse,
 } from './continuity-enrollment.mapper';
 import { splitGradoLabel } from '../students/students.mapper';
-import { ClassroomsService } from '../classrooms/classrooms.service';
-import { splitGradoLabel as splitTargetGrado } from '../classrooms/classrooms.util';
+import { SalonesService } from '../maestros/salones/salones.service';
+import { splitGradoLabel as splitTargetGrado } from '../maestros/salones/salones.util';
 
 @Injectable()
 export class ContinuityEnrollmentService {
@@ -40,7 +40,7 @@ export class ContinuityEnrollmentService {
     private readonly historyRepo: Repository<StudentAcademicHistory>,
     @InjectRepository(Grade)
     private readonly gradeRepo: Repository<Grade>,
-    private readonly classroomsService: ClassroomsService,
+    private readonly salonesService: SalonesService,
   ) {}
 
   async findCandidates(anioOrigen: number, anioNuevo: number) {
@@ -194,12 +194,11 @@ export class ContinuityEnrollmentService {
 
     const target = splitTargetGrado(record.gradoNuevo);
     if (target.nivel && record.seccionNueva && record.seccionNueva !== '—') {
-      await this.classroomsService.assertVacancyAvailable(
+      await this.salonesService.assertVacancyAvailable(
         target.nivel,
         target.grado,
         record.seccionNueva,
         record.anioNuevo,
-        record.id,
       );
     }
 
@@ -342,7 +341,7 @@ export class ContinuityEnrollmentService {
     if (!target.nivel || !record.seccionNueva || record.seccionNueva === '—') {
       return record;
     }
-    const vacancies = await this.classroomsService.findVacancies({
+    const vacancies = await this.salonesService.findVacancies({
       anioEscolar: anioNuevo,
       nivel: target.nivel,
       grado: target.grado,
@@ -366,7 +365,7 @@ export class ContinuityEnrollmentService {
     if (!target.nivel || !candidate.seccionPropuesta || candidate.seccionPropuesta === '—') {
       return candidate;
     }
-    const vacancies = await this.classroomsService.findVacancies({
+    const vacancies = await this.salonesService.findVacancies({
       anioEscolar: anioNuevo,
       nivel: target.nivel,
       grado: target.grado,

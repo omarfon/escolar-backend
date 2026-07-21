@@ -6,10 +6,15 @@ export class ChangeSectionDto {
   @MaxLength(5)
   nuevaSeccion: string;
 
-  @IsOptional()
   @IsString()
+  @MinLength(1)
   @MaxLength(80)
-  motivo?: string;
+  motivo: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  autorizadoPor: string;
 
   @IsOptional()
   @IsString()

@@ -1,11 +1,21 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { MAESTRO_EVENTOS_SEED } from '../maestros/eventos/eventos-seed.data';
 import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
 import {
+  Evento,
   EventoEstado,
-  SchoolEvent,
-} from './entities/school-event.entity';
+} from './entities/evento.entity';
+import {
+  inferEventVisibility,
+  normalizeEventVisibility,
+} from './event-visibility.util';
+import {
+  canceladoFromEstado,
+  computeEstadoFromDates,
+  normalizeEventEstado,
+} from './event-estado.util';
 
 export interface EventResponse {
   id: number;
@@ -18,7 +28,10 @@ export interface EventResponse {
   horaFin: string | null;
   lugar: string;
   destinatarios: string;
+  visibilidad: string;
   nivel: string;
+  grado: string;
+  seccion: string;
   responsable: string;
   publicado: boolean;
   cancelado: boolean;
@@ -31,24 +44,36 @@ export interface EventResponse {
 @Injectable()
 export class EventsService {
   constructor(
-    @InjectRepository(SchoolEvent)
-    private readonly eventsRepo: Repository<SchoolEvent>,
+    @InjectRepository(Evento)
+    private readonly eventsRepo: Repository<Evento>,
   ) {}
 
   create(dto: CreateEventDto): Promise<EventResponse> {
+    const vis = normalizeEventVisibility(dto);
+    const fechaFin = dto.fechaFin ?? dto.fechaInicio;
+    const estado = normalizeEventEstado({
+      estado: dto.estado,
+      fechaInicio: dto.fechaInicio,
+      fechaFin,
+    });
     const entity = this.eventsRepo.create({
       titulo: dto.titulo.trim(),
       descripcion: dto.descripcion?.trim() ?? '',
-      tipo: dto.tipo as SchoolEvent['tipo'],
+      tipo: dto.tipo as Evento['tipo'],
       fechaInicio: dto.fechaInicio,
-      fechaFin: dto.fechaFin ?? dto.fechaInicio,
+      fechaFin,
       horaInicio: dto.horaInicio?.trim() || '08:00',
       horaFin: dto.horaFin?.trim() || null,
       lugar: dto.lugar?.trim() ?? '',
-      destinatarios: dto.destinatarios as SchoolEvent['destinatarios'],
-      nivel: dto.nivel?.trim() ?? '',
+      destinatarios: vis.destinatarios,
+      visibilidad: vis.visibilidad,
+      nivel: vis.nivel,
+      grado: vis.grado,
+      seccion: vis.seccion,
       responsable: dto.responsable?.trim() ?? '',
       publicado: dto.publicado ?? true,
+      estado,
+      cancelado: canceladoFromEstado(estado),
     });
     return this.eventsRepo.save(entity).then((saved) => this.toResponse(saved));
   }
@@ -60,6 +85,17 @@ export class EventsService {
     estado?: string;
     busqueda?: string;
   }): Promise<EventResponse[]> {
+    if ((await this.eventsRepo.count()) === 0) {
+      await this.eventsRepo.save(
+        MAESTRO_EVENTOS_SEED.map((e) => {
+          const estado = computeEstadoFromDates(e.fechaInicio, e.fechaFin);
+          return this.eventsRepo.create({ ...e, estado, cancelado: false });
+        }),
+      );
+    }
+
+    await this.syncEstadosLegacy();
+
     const qb = this.eventsRepo
       .createQueryBuilder('e')
       .orderBy('e.fechaInicio', 'ASC')
@@ -76,13 +112,13 @@ export class EventsService {
         destinatarios: query.destinatarios,
       });
     }
+    if (query?.estado) {
+      qb.andWhere('e.estado = :estado', { estado: query.estado });
+    }
 
     let rows = await qb.getMany();
     let result = rows.map((row) => this.toResponse(row));
 
-    if (query?.estado) {
-      result = result.filter((e) => e.estado === query.estado);
-    }
     if (query?.busqueda?.trim()) {
       const q = query.busqueda.trim().toLowerCase();
       result = result.filter(
@@ -116,6 +152,21 @@ export class EventsService {
         dto.horaInicio !== undefined ? dto.horaInicio.trim() : current.horaInicio,
       horaFin: dto.horaFin !== undefined ? dto.horaFin?.trim() || null : current.horaFin,
     });
+
+    if (dto.estado !== undefined || dto.cancelado !== undefined) {
+      const estado = normalizeEventEstado({
+        estado: dto.estado ?? current.estado,
+        cancelado: dto.cancelado ?? current.cancelado,
+        fechaInicio: current.fechaInicio,
+        fechaFin: current.fechaFin,
+      });
+      current.estado = estado;
+      current.cancelado = canceladoFromEstado(estado);
+      if (estado === 'cancelado') {
+        current.publicado = false;
+      }
+    }
+
     const saved = await this.eventsRepo.save(current);
     return this.toResponse(saved);
   }
@@ -126,13 +177,13 @@ export class EventsService {
     return { deleted: true, id };
   }
 
-  private async getOrFail(id: number): Promise<SchoolEvent> {
+  private async getOrFail(id: number): Promise<Evento> {
     const event = await this.eventsRepo.findOneBy({ id });
     if (!event) throw new NotFoundException(`Evento ${id} no encontrado`);
     return event;
   }
 
-  private toResponse(event: SchoolEvent): EventResponse {
+  private toResponse(event: Evento): EventResponse {
     const fin = event.fechaFin ?? event.fechaInicio;
     return {
       id: event.id,
@@ -145,34 +196,43 @@ export class EventsService {
       horaFin: event.horaFin,
       lugar: event.lugar,
       destinatarios: event.destinatarios,
+      visibilidad: inferEventVisibility(event),
       nivel: event.nivel,
+      grado: event.grado ?? '',
+      seccion: event.seccion ?? '',
       responsable: event.responsable,
       publicado: event.publicado,
       cancelado: event.cancelado,
-      estado: resolveEstado(event),
+      estado: event.estado ?? computeEstadoFromDates(
+        event.fechaInicio,
+        event.fechaFin,
+        event.cancelado,
+      ),
       fechaInicioDisplay: formatDate(event.fechaInicio),
       fechaFinDisplay: event.fechaFin ? formatDate(event.fechaFin) : null,
       horario: formatHorario(event.horaInicio, event.horaFin),
     };
   }
-}
 
-function resolveEstado(event: SchoolEvent): EventoEstado {
-  if (event.cancelado) return 'cancelado';
+  private async syncEstadosLegacy(): Promise<void> {
+    const rows = await this.eventsRepo.find();
+    const pending = rows.filter((row) => {
+      const expected = row.cancelado
+        ? 'cancelado'
+        : computeEstadoFromDates(row.fechaInicio, row.fechaFin);
+      return !row.estado || (row.estado === 'programado' && expected !== 'programado');
+    });
+    if (!pending.length) return;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const inicio = parseDate(event.fechaInicio);
-  const fin = parseDate(event.fechaFin ?? event.fechaInicio);
-
-  if (fin < today) return 'finalizado';
-  if (inicio <= today && fin >= today) return 'en_curso';
-  return 'programado';
-}
-
-function parseDate(value: string): Date {
-  const [y, m, d] = value.split('-').map(Number);
-  return new Date(y, m - 1, d);
+    await this.eventsRepo.save(
+      pending.map((row) => ({
+        ...row,
+        estado: row.cancelado
+          ? 'cancelado'
+          : computeEstadoFromDates(row.fechaInicio, row.fechaFin),
+      })),
+    );
+  }
 }
 
 function formatDate(value: string): string {

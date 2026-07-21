@@ -38,12 +38,24 @@ export class CreateEventDto {
   @IsString()
   lugar?: string;
 
-  @IsIn(['alumnos', 'padres', 'todos', 'docentes'])
+  @IsIn(['alumnos', 'padres', 'todos', 'docentes', 'salon'])
   destinatarios: string;
+
+  @IsOptional()
+  @IsIn(['global', 'limitado'])
+  visibilidad?: string;
 
   @IsOptional()
   @IsString()
   nivel?: string;
+
+  @IsOptional()
+  @IsString()
+  grado?: string;
+
+  @IsOptional()
+  @IsString()
+  seccion?: string;
 
   @IsOptional()
   @IsString()
@@ -52,6 +64,10 @@ export class CreateEventDto {
   @IsOptional()
   @IsBoolean()
   publicado?: boolean;
+
+  @IsOptional()
+  @IsIn(['programado', 'en_curso', 'finalizado', 'cancelado'])
+  estado?: string;
 }
 
 export class UpdateEventDto {
@@ -89,12 +105,24 @@ export class UpdateEventDto {
   lugar?: string;
 
   @IsOptional()
-  @IsIn(['alumnos', 'padres', 'todos', 'docentes'])
+  @IsIn(['alumnos', 'padres', 'todos', 'docentes', 'salon'])
   destinatarios?: string;
+
+  @IsOptional()
+  @IsIn(['global', 'limitado'])
+  visibilidad?: string;
 
   @IsOptional()
   @IsString()
   nivel?: string;
+
+  @IsOptional()
+  @IsString()
+  grado?: string;
+
+  @IsOptional()
+  @IsString()
+  seccion?: string;
 
   @IsOptional()
   @IsString()
@@ -107,4 +135,8 @@ export class UpdateEventDto {
   @IsOptional()
   @IsBoolean()
   cancelado?: boolean;
+
+  @IsOptional()
+  @IsIn(['programado', 'en_curso', 'finalizado', 'cancelado'])
+  estado?: string;
 }

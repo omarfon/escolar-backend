@@ -2,11 +2,20 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Attendance } from '../attendances/entities/attendance.entity';
+import { Grade } from '../grades/entities/grade.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
+import {
+  HistorialAcademicoDetalle,
+  HistorialAcademicoListItem,
+  HistorialAsistenciaResumen,
+  HistorialNotaItem,
+  HistorialTrayectoriaItem,
+} from './dto/historial-academico.dto';
 import { ChangeSectionDto } from './dto/change-section.dto';
 import { CreateStudentDto } from './dto/create-student.dto';
 import {
@@ -21,6 +30,7 @@ import { StudentAcademicHistory } from './entities/student-academic-history.enti
 import { StudentDocument } from './entities/student-document.entity';
 import {
   REPRESENTANTE_VACIO,
+  EstadoCambioSeccion,
   Student,
 } from './entities/student.entity';
 import {
@@ -32,10 +42,22 @@ import {
   splitGradoLabel,
   toExpedienteResponse,
 } from './students.mapper';
+import { StudentMeProfile } from './dto/student-me.dto';
+import { StudentContactosResponse } from './dto/student-contactos.dto';
+import { listStudentsForAula } from './students-dedupe.util';
+import { HorarioBlock } from '../horarios/entities/horario-block.entity';
+import {
+  abrevDocente,
+  Docente,
+} from '../maestros/docentes/entities/docente.entity';
+import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
+import { User } from '../users/entities/user.entity';
 import {
   requisitosPorGrado,
   tiposEquivalentes,
+  combinarRequisitosConDocumentos,
 } from './document-requirements.constants';
+import { StudentDocumentsResponse } from './dto/student-documents.dto';
 import {
   BulkImportMatriculaResult,
   BulkMatriculaPreviewItem,
@@ -43,10 +65,11 @@ import {
   BulkMatriculaRowDto,
 } from './dto/bulk-import-students.dto';
 import { parseMatriculaFile, FilaParseadaMatricula } from './bulk-matricula.parser';
-import { ClassroomsService } from '../classrooms/classrooms.service';
+import { SalonesService } from '../maestros/salones/salones.service';
+import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 
 @Injectable()
-export class StudentsService {
+export class StudentsService implements OnModuleInit {
   constructor(
     @InjectRepository(Student)
     private readonly studentsRepository: Repository<Student>,
@@ -60,8 +83,22 @@ export class StudentsService {
     private readonly historyRepo: Repository<StudentAcademicHistory>,
     @InjectRepository(Attendance)
     private readonly attendanceRepo: Repository<Attendance>,
-    private readonly classroomsService: ClassroomsService,
+    @InjectRepository(Grade)
+    private readonly gradeRepo: Repository<Grade>,
+    @InjectRepository(HorarioBlock)
+    private readonly horarioBlockRepo: Repository<HorarioBlock>,
+    @InjectRepository(Docente)
+    private readonly docenteRepo: Repository<Docente>,
+    @InjectRepository(CurriculumSubject)
+    private readonly curriculumSubjectRepo: Repository<CurriculumSubject>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+    private readonly salonesService: SalonesService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.syncEstadosCambioSeccionDesdeHistorial();
+  }
 
   async create(createStudentDto: CreateStudentDto): Promise<Student> {
     const entity = this.studentsRepository.create({
@@ -370,6 +407,82 @@ export class StudentsService {
     return Promise.all(filtered.map((s) => this.buildExpediente(s)));
   }
 
+  async exportExpedientesCsv(filters?: {
+    q?: string;
+    grado?: string;
+    estado?: string;
+  }): Promise<string> {
+    let items = await this.findAllExpedientes(filters?.q);
+    if (filters?.grado?.trim()) {
+      const grado = filters.grado.trim();
+      items = items.filter(
+        (i) => i.gradoLabel === grado || i.grado === grado,
+      );
+    }
+    if (filters?.estado?.trim()) {
+      items = items.filter((i) => i.estado === filters.estado!.trim());
+    }
+    return this.buildExpedientesCsv(items);
+  }
+
+  private buildExpedientesCsv(items: ExpedienteResponse[]): string {
+    const sep = ';';
+    const esc = (v: string | number | null | undefined) => {
+      const s = String(v ?? '');
+      return s.includes(sep) || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"`
+        : s;
+    };
+
+    const header = [
+      'Codigo',
+      'Apellidos',
+      'Nombres',
+      'DNI',
+      'Email',
+      'Sexo',
+      'Fecha nacimiento',
+      'Direccion',
+      'Grado',
+      'Seccion',
+      'Estado',
+      'Anio ingreso',
+      'Apoderado',
+      'DNI apoderado',
+      'Telefono apoderado',
+      'Email apoderado',
+      '% Asistencia',
+      'Conducta',
+    ];
+
+    const rows = items.map((e) =>
+      [
+        e.codigo,
+        e.apellidos,
+        e.nombres,
+        e.dni,
+        e.email,
+        e.sexo,
+        e.fechaNac,
+        e.direccion,
+        e.gradoLabel,
+        e.seccion,
+        e.estado,
+        e.anioIngreso,
+        `${e.apoderado.nombres} ${e.apoderado.apellidos}`.trim(),
+        e.apoderado.dni,
+        e.apoderado.telefono,
+        e.apoderado.email,
+        e.asistenciaPct,
+        e.conductaNota,
+      ]
+        .map(esc)
+        .join(sep),
+    );
+
+    return [header.map(esc).join(sep), ...rows].join('\n');
+  }
+
   getRequisitosDocumentos(gradoLabel: string) {
     return requisitosPorGrado(gradoLabel);
   }
@@ -406,6 +519,148 @@ export class StudentsService {
 
   findOne(id: number) {
     return this.getOrFail(id);
+  }
+
+  async findMeByLogin(login: string): Promise<StudentMeProfile> {
+    const email = login.trim().toLowerCase();
+    const student = await this.studentsRepository.findOneBy({ email });
+    if (!student) {
+      throw new NotFoundException(
+        'No se encontró el registro académico del estudiante',
+      );
+    }
+    const grado = student.grado;
+    return {
+      id: student.id,
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      email: student.email,
+      dni: student.dni ?? '',
+      nivel: student.nivel,
+      grado,
+      gradoLabel: gradoLabelFromParts(student.nivel, grado),
+      seccion: student.seccion,
+      aulaLabel: `${student.nivel} ${grado} · Sección ${student.seccion}`,
+      activo: student.activo,
+    };
+  }
+
+  async findMeProfileByLogin(login: string): Promise<ExpedienteResponse> {
+    const email = login.trim().toLowerCase();
+    const student = await this.studentsRepository.findOneBy({ email });
+    if (!student) {
+      throw new NotFoundException(
+        'No se encontró el registro académico del estudiante',
+      );
+    }
+    return this.findExpediente(student.id);
+  }
+
+  async findContactosByLogin(
+    login: string,
+    anioEscolar?: number,
+  ): Promise<StudentContactosResponse> {
+    const me = await this.findMeByLogin(login);
+    const anio = anioEscolar ?? new Date().getFullYear();
+
+    const allStudents = await this.studentsRepository.find();
+    const companerosRaw = listStudentsForAula(
+      allStudents,
+      me.nivel,
+      me.grado,
+      me.seccion,
+    ).filter((s) => s.id !== me.id);
+
+    const emails = companerosRaw.map((s) => s.email.trim().toLowerCase());
+    const users =
+      emails.length > 0
+        ? await this.userRepo.find({ where: { email: In(emails) } })
+        : [];
+    const telefonoByEmail = new Map(
+      users.map((u) => [u.email.trim().toLowerCase(), u.telefono?.trim() ?? '']),
+    );
+
+    const companeros = companerosRaw.map((s) => ({
+      id: s.id,
+      nombres: s.nombre,
+      apellidos: s.apellido,
+      email: s.email,
+      telefono: telefonoByEmail.get(s.email.trim().toLowerCase()) ?? '',
+    }));
+
+    const blocks = await this.horarioBlockRepo.find({
+      where: {
+        anioEscolar: anio,
+        nivel: me.nivel,
+        grado: me.grado,
+        seccion: me.seccion,
+        activo: true,
+      },
+    });
+
+    const cursoIds = [...new Set(blocks.map((b) => b.cursoId))];
+    const docenteIds = [...new Set(blocks.map((b) => b.docenteId))];
+
+    const cursos =
+      cursoIds.length > 0
+        ? await this.curriculumSubjectRepo.find({
+            where: { id: In(cursoIds) },
+          })
+        : [];
+    const cursoById = new Map(cursos.map((c) => [c.id, c.nombre]));
+
+    const docentesDb =
+      docenteIds.length > 0
+        ? await this.docenteRepo.find({
+            where: { id: In(docenteIds), estado: 'activo' },
+          })
+        : [];
+    const docenteById = new Map(docentesDb.map((d) => [d.id, d]));
+
+    const cursosPorDocente = new Map<number, Set<string>>();
+    for (const block of blocks) {
+      const cursoNombre = cursoById.get(block.cursoId);
+      if (!cursoNombre) continue;
+      if (!cursosPorDocente.has(block.docenteId)) {
+        cursosPorDocente.set(block.docenteId, new Set());
+      }
+      cursosPorDocente.get(block.docenteId)!.add(cursoNombre);
+    }
+
+    const docentes = [...cursosPorDocente.entries()]
+      .map(([docenteId, cursosSet]) => {
+        const docente = docenteById.get(docenteId);
+        if (!docente) return null;
+        return {
+          id: docente.id,
+          nombres: docente.nombres,
+          apellidos: docente.apellidos,
+          abrev: docente.abrev?.trim() || abrevDocente(docente.nombres, docente.apellidos),
+          email: docente.email,
+          telefono: docente.telefono?.trim() ?? '',
+          especialidad: docente.especialidad?.trim() ?? '',
+          cursos: [...cursosSet].sort((a, b) => a.localeCompare(b, 'es')),
+        };
+      })
+      .filter((d): d is NonNullable<typeof d> => d !== null)
+      .sort((a, b) =>
+        `${a.apellidos} ${a.nombres}`.localeCompare(
+          `${b.apellidos} ${b.nombres}`,
+          'es',
+        ),
+      );
+
+    return {
+      aula: {
+        nivel: me.nivel,
+        grado: me.grado,
+        seccion: me.seccion,
+        aulaLabel: me.aulaLabel,
+        anioEscolar: anio,
+      },
+      companeros,
+      docentes,
+    };
   }
 
   async findExpediente(id: number): Promise<ExpedienteResponse> {
@@ -542,8 +797,66 @@ export class StudentsService {
     return { deleted: true, id: docId };
   }
 
+  async findStudentDocumentsMatricula(
+    studentId: number,
+  ): Promise<StudentDocumentsResponse> {
+    const student = await this.getOrFail(studentId);
+    const gradoLabel = gradoLabelFromParts(student.nivel, student.grado);
+    const stored = await this.documentRepo.find({
+      where: { studentId },
+      order: { id: 'ASC' },
+    });
+    const documentos = combinarRequisitosConDocumentos(
+      gradoLabel,
+      stored.map((d) => this.toDocumentResponse(d)),
+    );
+    return {
+      studentId: student.id,
+      codigo: buildCodigo(student.id, student.codigo),
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      gradoLabel,
+      seccion: student.seccion,
+      anioIngreso: student.anioIngreso ?? String(new Date().getFullYear()),
+      documentos,
+      entregados: documentos.filter((d) => d.estado === 'entregado').length,
+      total: documentos.length,
+      obligatoriosPendientes: documentos.filter(
+        (d) => d.obligatorio && d.estado !== 'entregado',
+      ).length,
+    };
+  }
+
   async getSectionOccupancy(nivel: string, grado: string, anioEscolar?: number) {
-    return this.classroomsService.getSectionOccupancy(nivel, grado, anioEscolar);
+    return this.salonesService.getSectionOccupancy(nivel, grado, anioEscolar);
+  }
+
+  async findSectionChangeCandidates(
+    nivel?: string,
+    grado?: string,
+  ): Promise<ExpedienteResponse[]> {
+    const students = await this.studentsRepository.find({
+      where: {
+        activo: true,
+        estadoMatricula: 'activo',
+        estadoCambioSeccion: 'elegible',
+      },
+      order: { apellido: 'ASC', nombre: 'ASC', id: 'ASC' },
+    });
+
+    const unicos = this.dedupeStudentsForSectionChange(students);
+    const filtered = unicos.filter((s) => {
+      if (nivel && s.nivel !== nivel) return false;
+      if (grado) {
+        return (
+          normalizeGradoMatricula(s.grado) === normalizeGradoMatricula(grado) ||
+          gradoLabelFromParts(s.nivel, s.grado) === grado.trim()
+        );
+      }
+      return true;
+    });
+
+    return Promise.all(filtered.map((s) => this.buildExpediente(s)));
   }
 
   async findSectionChanges(nivel?: string, grado?: string) {
@@ -552,7 +865,11 @@ export class StudentsService {
       .orderBy('change.createdAt', 'DESC');
 
     if (nivel) qb.andWhere('change.nivel = :nivel', { nivel });
-    if (grado) qb.andWhere('change.grado = :grado', { grado });
+    if (grado) {
+      qb.andWhere('change.grado = :grado', {
+        grado: normalizeGradoMatricula(grado),
+      });
+    }
 
     const rows = await qb.getMany();
     return rows.map((row) => ({
@@ -565,27 +882,103 @@ export class StudentsService {
       seccionNueva: row.seccionNueva,
       motivo: row.motivo,
       observacion: row.observacion,
+      autorizadoPor: row.autorizadoPor,
       realizadoPor: row.realizadoPor,
+      anioEscolar: row.anioEscolar ?? row.createdAt.getFullYear(),
+      estado: row.estado ?? 'completado',
       createdAt: row.createdAt.toISOString(),
     }));
   }
 
   async changeSection(id: number, dto: ChangeSectionDto) {
     const student = await this.getOrFail(id);
+    if (!student.activo) {
+      throw new BadRequestException(
+        'Solo se puede cambiar seccion a estudiantes con matricula activa',
+      );
+    }
+
+    const canonical = await this.getCanonicalSectionChangeStudent(student);
+    if (canonical.id !== student.id) {
+      throw new BadRequestException(
+        `Registro duplicado. Utilice el expediente ${buildCodigo(canonical.id, canonical.codigo)}.`,
+      );
+    }
+
+    if (student.estadoCambioSeccion === 'cambio_realizado') {
+      throw new BadRequestException(
+        'Este alumno ya tiene un cambio de seccion registrado en el periodo actual',
+      );
+    }
+
     const nuevaSeccion = dto.nuevaSeccion.trim().toUpperCase();
+    const motivo = dto.motivo.trim();
+    const autorizadoPor = dto.autorizadoPor.trim();
+    const observacion = dto.observacion?.trim() ?? '';
 
     if (student.seccion.toUpperCase() === nuevaSeccion) {
       throw new BadRequestException('El estudiante ya pertenece a esa seccion');
     }
 
-    const seccionAnterior = student.seccion;
+    if (motivo === 'otro' && !observacion) {
+      throw new BadRequestException(
+        'Debe indicar una observacion cuando el motivo es "otro"',
+      );
+    }
+
+    const dni = student.dni?.trim();
+    if (dni) {
+      const mismoDniEnDestino = await this.studentsRepository.findOne({
+        where: {
+          nivel: student.nivel,
+          grado: student.grado,
+          seccion: nuevaSeccion,
+          dni,
+          activo: true,
+        },
+      });
+      if (mismoDniEnDestino && mismoDniEnDestino.id !== student.id) {
+        throw new BadRequestException(
+          'Ya existe un alumno con el mismo DNI en la seccion destino',
+        );
+      }
+    }
+
+    const duplicadoNombreEnDestino = await this.studentsRepository.find({
+      where: {
+        nivel: student.nivel,
+        grado: student.grado,
+        seccion: nuevaSeccion,
+        apellido: student.apellido,
+        nombre: student.nombre,
+        activo: true,
+      },
+    });
+    if (duplicadoNombreEnDestino.some((s) => s.id !== student.id)) {
+      throw new BadRequestException(
+        'Ya existe un alumno con el mismo nombre en la seccion destino',
+      );
+    }
+
+    const anio = new Date().getFullYear();
+    await this.salonesService.assertVacancyAvailable(
+      student.nivel,
+      student.grado,
+      nuevaSeccion,
+      anio,
+    );
+
+    const seccionAnterior = student.seccion.toUpperCase();
     student.seccion = nuevaSeccion;
+    student.estadoCambioSeccion = 'cambio_realizado';
     await this.studentsRepository.save(student);
 
     await this.scheduleRepo.update(
       { studentId: student.id },
       { seccion: nuevaSeccion },
     );
+
+    const realizadoPor = dto.realizadoPor?.trim() || 'Sistema';
 
     await this.sectionChangeRepo.save(
       this.sectionChangeRepo.create({
@@ -595,13 +988,35 @@ export class StudentsService {
         grado: student.grado,
         seccionAnterior,
         seccionNueva: nuevaSeccion,
-        motivo: dto.motivo?.trim() ?? '',
-        observacion: dto.observacion?.trim() ?? '',
-        realizadoPor: dto.realizadoPor?.trim() || 'Sistema',
+        motivo,
+        observacion,
+        autorizadoPor,
+        realizadoPor,
+        anioEscolar: anio,
+        estado: 'completado',
       }),
     );
 
-    return this.findExpediente(id);
+    const occupancy = await this.salonesService.getSectionOccupancy(
+      student.nivel,
+      student.grado,
+      anio,
+    );
+    const occOrigen = occupancy.find((o) => o.seccion === seccionAnterior);
+    const occDestino = occupancy.find((o) => o.seccion === nuevaSeccion);
+
+    return {
+      student: await this.findExpediente(id),
+      seccionAnterior,
+      seccionNueva: nuevaSeccion,
+      vacanteLiberadaEn: seccionAnterior,
+      vacanteOcupadaEn: nuevaSeccion,
+      disponiblesOrigen: occOrigen?.disponibles ?? null,
+      disponiblesDestino: occDestino?.disponibles ?? null,
+      motivo,
+      autorizadoPor,
+      realizadoPor,
+    };
   }
 
   private async buildExpediente(student: Student): Promise<ExpedienteResponse> {
@@ -692,6 +1107,343 @@ export class StudentsService {
       estado: doc.estado,
       fechaEntrega: doc.fechaEntrega,
       imagenUrl: doc.imagenUrl || undefined,
+    };
+  }
+
+  private async syncEstadosCambioSeccionDesdeHistorial(): Promise<void> {
+    const anio = new Date().getFullYear();
+    const cambios = await this.sectionChangeRepo.find();
+    const ids = [
+      ...new Set(
+        cambios
+          .filter(
+            (c) =>
+              (c.anioEscolar ?? c.createdAt.getFullYear()) === anio,
+          )
+          .map((c) => c.studentId),
+      ),
+    ];
+    if (!ids.length) return;
+    await this.studentsRepository.update(
+      { id: In(ids) },
+      { estadoCambioSeccion: 'cambio_realizado' satisfies EstadoCambioSeccion },
+    );
+  }
+
+  private matriculaIdentityKey(student: Student): string {
+    const dni = student.dni?.trim();
+    if (dni) return `dni:${dni}`;
+    const codigo = student.codigo?.trim();
+    if (codigo) return `cod:${codigo}`;
+    return [
+      'nom',
+      student.apellido.trim().toLowerCase(),
+      student.nombre.trim().toLowerCase(),
+      student.nivel.trim().toLowerCase(),
+      normalizeGradoMatricula(student.grado).toLowerCase(),
+      student.seccion.trim().toUpperCase(),
+    ].join('|');
+  }
+
+  private dedupeStudentsForSectionChange(students: Student[]): Student[] {
+    const byIdentity = new Map<string, Student>();
+    for (const s of students) {
+      const key = this.matriculaIdentityKey(s);
+      const prev = byIdentity.get(key);
+      if (!prev || s.id < prev.id) byIdentity.set(key, s);
+    }
+
+    const byNombreEnAula = new Map<string, Student>();
+    for (const s of byIdentity.values()) {
+      const key = [
+        s.apellido.trim().toLowerCase(),
+        s.nombre.trim().toLowerCase(),
+        s.nivel.trim().toLowerCase(),
+        normalizeGradoMatricula(s.grado).toLowerCase(),
+        s.seccion.trim().toUpperCase(),
+      ].join('|');
+      const prev = byNombreEnAula.get(key);
+      if (!prev || s.id < prev.id) byNombreEnAula.set(key, s);
+    }
+
+    return [...byNombreEnAula.values()];
+  }
+
+  private async getCanonicalSectionChangeStudent(
+    student: Student,
+  ): Promise<Student> {
+    const activos = await this.studentsRepository.find({
+      where: { activo: true, estadoMatricula: 'activo' },
+    });
+    const unicos = this.dedupeStudentsForSectionChange(activos);
+    const key = this.matriculaIdentityKey(student);
+    const byId = unicos.find((s) => s.id === student.id);
+    if (byId) return byId;
+
+    const nombreKey = [
+      student.apellido.trim().toLowerCase(),
+      student.nombre.trim().toLowerCase(),
+      student.nivel.trim().toLowerCase(),
+      normalizeGradoMatricula(student.grado).toLowerCase(),
+      student.seccion.trim().toUpperCase(),
+    ].join('|');
+
+    const match = unicos.find((s) => {
+      const k = [
+        s.apellido.trim().toLowerCase(),
+        s.nombre.trim().toLowerCase(),
+        s.nivel.trim().toLowerCase(),
+        normalizeGradoMatricula(s.grado).toLowerCase(),
+        s.seccion.trim().toUpperCase(),
+      ].join('|');
+      return k === nombreKey || this.matriculaIdentityKey(s) === key;
+    });
+
+    return match ?? student;
+  }
+
+  async findHistorialAcademicoList(
+    search?: string,
+  ): Promise<HistorialAcademicoListItem[]> {
+    const students = await this.studentsRepository.find({
+      order: { apellido: 'ASC', nombre: 'ASC' },
+    });
+    const filtered = this.filterStudentsForSearch(students, search);
+    return Promise.all(filtered.map((s) => this.buildHistorialListItem(s)));
+  }
+
+  async findHistorialAcademicoDetalle(
+    id: number,
+  ): Promise<HistorialAcademicoDetalle> {
+    const student = await this.getOrFail(id);
+    const [historial, attendances, grades, asistenciaPct] = await Promise.all([
+      this.historyRepo.find({
+        where: { studentId: student.id },
+        order: { anio: 'ASC' },
+      }),
+      this.attendanceRepo.find({ where: { studentId: student.id } }),
+      this.gradeRepo.find({
+        where: { studentId: student.id },
+        order: { bimestre: 'ASC', curso: 'ASC' },
+      }),
+      this.computeAsistenciaPct(student.id),
+    ]);
+
+    const anioActual = String(new Date().getFullYear());
+    const gradesAnioActual = grades.filter((g) =>
+      g.fechaEvaluacion.startsWith(anioActual),
+    );
+    const notasActuales = this.mapGradesToNotas(gradesAnioActual);
+    const trayectoria = this.buildTrayectoria(
+      student,
+      historial,
+      attendances,
+      grades,
+    );
+
+    return {
+      id: student.id,
+      codigo: student.codigo,
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      dni: student.dni,
+      nivel: student.nivel,
+      gradoActual: student.grado,
+      seccionActual: student.seccion,
+      anioIngreso: student.anioIngreso,
+      conductaNota: student.conductaNota ?? 'AD',
+      asistenciaPct,
+      trayectoria,
+      notasActuales,
+      resumenNotas: this.buildResumenNotas(gradesAnioActual),
+    };
+  }
+
+  private filterStudentsForSearch(
+    students: Student[],
+    search?: string,
+  ): Student[] {
+    const query = search?.trim().toLowerCase();
+    if (!query) return students;
+    return students.filter((s) => {
+      const gradoLabel = gradoLabelFromParts(s.nivel, s.grado);
+      const haystack = [
+        s.nombre,
+        s.apellido,
+        s.dni,
+        s.codigo,
+        s.email,
+        gradoLabel,
+        `${s.apellido} ${s.nombre}`,
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }
+
+  private async buildHistorialListItem(
+    student: Student,
+  ): Promise<HistorialAcademicoListItem> {
+    const [historial, asistenciaPct, grades] = await Promise.all([
+      this.historyRepo.find({
+        where: { studentId: student.id },
+        order: { anio: 'ASC' },
+      }),
+      this.computeAsistenciaPct(student.id),
+      this.gradeRepo.find({ where: { studentId: student.id } }),
+    ]);
+
+    const anioActual = String(new Date().getFullYear());
+    const aniosRegistrados = historial.length;
+    const promedioUltimo = this.resolvePromedioUltimo(
+      student,
+      historial,
+      grades,
+      anioActual,
+    );
+
+    return {
+      id: student.id,
+      codigo: student.codigo,
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      dni: student.dni,
+      nivel: student.nivel,
+      gradoActual: student.grado,
+      seccionActual: student.seccion,
+      anioIngreso: student.anioIngreso,
+      aniosRegistrados,
+      promedioUltimo,
+      asistenciaPct,
+      conductaNota: student.conductaNota ?? 'AD',
+      estado: student.estadoMatricula,
+    };
+  }
+
+  private resolvePromedioUltimo(
+    student: Student,
+    historial: StudentAcademicHistory[],
+    grades: Grade[],
+    anioActual: string,
+  ): number | null {
+    const actualRow = historial.find((h) => h.anio === anioActual);
+    if (actualRow) return actualRow.promedio;
+    const promedioGrades = this.computePromedioFromGrades(grades);
+    if (promedioGrades !== null) return promedioGrades;
+    if (historial.length) return historial[historial.length - 1].promedio;
+    return null;
+  }
+
+  private buildTrayectoria(
+    student: Student,
+    historial: StudentAcademicHistory[],
+    attendances: Attendance[],
+    grades: Grade[],
+  ): HistorialTrayectoriaItem[] {
+    const anioActual = String(new Date().getFullYear());
+    const notasPorAnio = new Map<string, HistorialNotaItem[]>();
+    for (const grade of grades) {
+      const anio = grade.fechaEvaluacion.slice(0, 4);
+      const list = notasPorAnio.get(anio) ?? [];
+      list.push({
+        curso: grade.curso,
+        bimestre: grade.bimestre,
+        tipo: grade.tipo,
+        nota: grade.nota,
+        fechaEvaluacion: grade.fechaEvaluacion,
+      });
+      notasPorAnio.set(anio, list);
+    }
+
+    const rows: HistorialTrayectoriaItem[] = historial.map((h) => ({
+      anio: h.anio,
+      grado: h.grado,
+      seccion: h.seccion,
+      promedio: h.promedio,
+      estado: h.estado,
+      esActual: h.anio === anioActual,
+      asistencia: this.computeAsistenciaResumen(
+        attendances.filter((a) => a.fecha.startsWith(h.anio)),
+      ),
+      notas: notasPorAnio.get(h.anio) ?? [],
+    }));
+
+    return rows.sort((a, b) => Number(a.anio) - Number(b.anio));
+  }
+
+  private mapGradesToNotas(grades: Grade[]): HistorialNotaItem[] {
+    return grades.map((g) => ({
+      curso: g.curso,
+      bimestre: g.bimestre,
+      tipo: g.tipo,
+      nota: g.nota,
+      fechaEvaluacion: g.fechaEvaluacion,
+    }));
+  }
+
+  private buildResumenNotas(grades: Grade[]): HistorialAcademicoDetalle['resumenNotas'] {
+    if (!grades.length) {
+      return { promedioGeneral: null, totalRegistros: 0, porBimestre: [] };
+    }
+
+    const porBimestreMap = new Map<number, { sum: number; count: number }>();
+    for (const g of grades) {
+      const prev = porBimestreMap.get(g.bimestre) ?? { sum: 0, count: 0 };
+      porBimestreMap.set(g.bimestre, {
+        sum: prev.sum + g.nota,
+        count: prev.count + 1,
+      });
+    }
+
+    const porBimestre = [...porBimestreMap.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([bimestre, { sum, count }]) => ({
+        bimestre,
+        promedio: Math.round((sum / count) * 100) / 100,
+        cantidad: count,
+      }));
+
+    return {
+      promedioGeneral: this.computePromedioFromGrades(grades),
+      totalRegistros: grades.length,
+      porBimestre,
+    };
+  }
+
+  private computePromedioFromGrades(grades: Pick<Grade, 'nota'>[]): number | null {
+    if (!grades.length) return null;
+    const sum = grades.reduce((acc, g) => acc + g.nota, 0);
+    return Math.round((sum / grades.length) * 100) / 100;
+  }
+
+  private computeAsistenciaResumen(
+    records: Attendance[],
+  ): HistorialAsistenciaResumen {
+    if (!records.length) {
+      return {
+        total: 0,
+        presentes: 0,
+        faltas: 0,
+        tardanzas: 0,
+        justificadas: 0,
+        porcentaje: 0,
+      };
+    }
+
+    const presentes = records.filter((r) => r.estado === 'P').length;
+    const faltas = records.filter((r) => r.estado === 'F').length;
+    const tardanzas = records.filter((r) => r.estado === 'T').length;
+    const justificadas = records.filter((r) => r.estado === 'J').length;
+    const asistidos = presentes + tardanzas;
+
+    return {
+      total: records.length,
+      presentes,
+      faltas,
+      tardanzas,
+      justificadas,
+      porcentaje: Math.round((asistidos / records.length) * 100),
     };
   }
 

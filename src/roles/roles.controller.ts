@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { UpdateRolePermissionsDto } from './dto/update-role-permissions.dto';
 import { RolesService } from './roles.service';
 
 @Controller('roles')
+@RequirePermiso('admin.roles')
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 

@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { CreateAuditLogDto } from './dto/audit-log.dto';
 import { AuditLogsService } from './audit-logs.service';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('audit-logs')
+@RequirePermiso('admin.reportes')
 export class AuditLogsController {
   constructor(private readonly auditLogsService: AuditLogsService) {}
 

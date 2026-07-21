@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { ActasService } from './actas.service';
 import { ApproveActaDto, GenerateActaDto } from './dto/acta.dto';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('actas')
+@RequirePermiso('evaluacion.ver')
 export class ActasController {
   constructor(private readonly actasService: ActasService) {}
 
@@ -32,7 +34,13 @@ export class ActasController {
     });
   }
 
+  @Get('bimestres')
+  getBimestres() {
+    return this.actasService.getBimestresDisponibles();
+  }
+
   @Post('generate')
+  @RequirePermiso('evaluacion.aprobar', 'evaluacion.registrar')
   generate(@Body() dto: GenerateActaDto) {
     return this.actasService.generate(dto);
   }
@@ -43,11 +51,13 @@ export class ActasController {
   }
 
   @Patch(':id/approve')
+  @RequirePermiso('evaluacion.aprobar')
   approve(@Param('id') id: string, @Body() dto: ApproveActaDto) {
     return this.actasService.approve(+id, dto);
   }
 
   @Patch(':id/close')
+  @RequirePermiso('evaluacion.aprobar')
   close(@Param('id') id: string) {
     return this.actasService.close(+id);
   }

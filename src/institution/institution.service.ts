@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Campus } from './entities/campus.entity';
+import { Sede } from './entities/sede.entity';
 import { EducationLevel } from './entities/education-level.entity';
 import { GradeLevel } from './entities/grade-level.entity';
 import { GradeSection } from './entities/grade-section.entity';
@@ -81,8 +81,8 @@ export class InstitutionService {
   constructor(
     @InjectRepository(Institution)
     private readonly institutionRepo: Repository<Institution>,
-    @InjectRepository(Campus)
-    private readonly campusRepo: Repository<Campus>,
+    @InjectRepository(Sede)
+    private readonly sedeRepo: Repository<Sede>,
     @InjectRepository(EducationLevel)
     private readonly nivelRepo: Repository<EducationLevel>,
     @InjectRepository(GradeLevel)
@@ -93,7 +93,7 @@ export class InstitutionService {
 
   async getConfig() {
     const institution = await this.ensureInstitution();
-    const campuses = await this.campusRepo.find({ order: { id: 'ASC' } });
+    const campuses = await this.sedeRepo.find({ order: { id: 'ASC' } });
     const niveles = await this.findAllEducationLevels();
     return {
       institution: { ...institution, niveles },
@@ -109,7 +109,7 @@ export class InstitutionService {
   }
 
   findAllCampuses() {
-    return this.campusRepo.find({ order: { id: 'ASC' } });
+    return this.sedeRepo.find({ order: { id: 'ASC' } });
   }
 
   async findCampus(id: number) {
@@ -117,19 +117,24 @@ export class InstitutionService {
   }
 
   createCampus(dto: CreateCampusDto) {
-    const entity = this.campusRepo.create(dto);
-    return this.campusRepo.save(entity);
+    return this.ensureInstitution().then((institution) => {
+      const entity = this.sedeRepo.create({
+        ...dto,
+        institutionId: institution.id,
+      });
+      return this.sedeRepo.save(entity);
+    });
   }
 
   async updateCampus(id: number, dto: UpdateCampusDto) {
     const current = await this.getCampusOrFail(id);
-    const merged = this.campusRepo.merge(current, dto);
-    return this.campusRepo.save(merged);
+    const merged = this.sedeRepo.merge(current, dto);
+    return this.sedeRepo.save(merged);
   }
 
   async removeCampus(id: number) {
     const current = await this.getCampusOrFail(id);
-    await this.campusRepo.remove(current);
+    await this.sedeRepo.remove(current);
     return { deleted: true, id };
   }
 
@@ -338,8 +343,8 @@ export class InstitutionService {
     return institution;
   }
 
-  private async getCampusOrFail(id: number): Promise<Campus> {
-    const campus = await this.campusRepo.findOneBy({ id });
+  private async getCampusOrFail(id: number): Promise<Sede> {
+    const campus = await this.sedeRepo.findOneBy({ id });
     if (!campus) throw new NotFoundException(`Campus ${id} no encontrado`);
     return campus;
   }

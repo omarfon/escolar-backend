@@ -11,8 +11,9 @@ export class CreateConductIncidentDto {
   @IsInt()
   studentId: number;
 
-  @IsIn(['falta_leve', 'falta_grave', 'falta_muy_grave', 'reconocimiento'])
-  tipo: 'falta_leve' | 'falta_grave' | 'falta_muy_grave' | 'reconocimiento';
+  @IsString()
+  @MaxLength(40)
+  tipo: string;
 
   @IsString()
   @MaxLength(2000)
@@ -54,8 +55,9 @@ export class UpdateConductIncidentDto {
   studentId?: number;
 
   @IsOptional()
-  @IsIn(['falta_leve', 'falta_grave', 'falta_muy_grave', 'reconocimiento'])
-  tipo?: 'falta_leve' | 'falta_grave' | 'falta_muy_grave' | 'reconocimiento';
+  @IsString()
+  @MaxLength(40)
+  tipo?: string;
 
   @IsOptional()
   @IsString()

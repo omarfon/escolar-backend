@@ -41,4 +41,9 @@ export class CreateGradeDto {
   @IsOptional()
   @IsString()
   descripcion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  componenteCodigo?: string;
 }

@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
 import { EventsService } from './events.service';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('events')
+@RequirePermiso('comunicados.ver', 'matricula.ver', 'horarios.ver')
 export class EventsController {
   constructor(private readonly eventsService: EventsService) {}
 

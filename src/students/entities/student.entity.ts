@@ -2,6 +2,8 @@ import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
 export type StudentSexo = 'M' | 'F';
 export type StudentEstadoMatricula = 'activo' | 'inactivo' | 'retirado';
+/** elegible: pendiente de cambio | cambio_realizado: ya fue trasladado en el periodo */
+export type EstadoCambioSeccion = 'elegible' | 'cambio_realizado';
 
 export interface RepresentanteData {
   nombres: string;
@@ -82,6 +84,9 @@ export class Student {
 
   @Column({ length: 15, default: 'activo' })
   estadoMatricula: StudentEstadoMatricula;
+
+  @Column({ length: 20, default: 'elegible' })
+  estadoCambioSeccion: EstadoCambioSeccion;
 
   @Column({ length: 3, default: 'AD' })
   conductaNota: string;

@@ -3,20 +3,109 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { AttendancesService } from './attendances.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
 import { CreateJustificationDto } from './dto/justification.dto';
 import { UpdateAlertSettingsDto } from './dto/alert-settings.dto';
 import { UpdateAttendanceDto } from './dto/update-attendance.dto';
+import { SaveDailyRegisterDto } from './dto/daily-register.dto';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('attendances')
+@RequirePermiso('asistencia.ver')
 export class AttendancesController {
   constructor(private readonly attendancesService: AttendancesService) {}
+
+  @Get('control-report/export')
+  @RequirePermiso('asistencia.exportar', 'asistencia.reportes')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  async exportControlReport(
+    @Query('mes') mes?: string,
+    @Query('nivel') nivel?: string,
+    @Query('grado') grado?: string,
+    @Query('seccion') seccion?: string,
+    @Query('busqueda') busqueda?: string,
+    @Res() res?: Response,
+  ) {
+    const report = await this.attendancesService.getControlReport({
+      mes,
+      nivel,
+      grado,
+      seccion,
+      busqueda,
+    });
+    const csv = this.attendancesService.buildControlReportCsv(report);
+    const filename = `control-faltas-${report.mes}.csv`;
+    res!.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`,
+    );
+    res!.send(`\uFEFF${csv}`);
+  }
+
+  @Get('control-report')
+  @RequirePermiso('asistencia.reportes', 'asistencia.ver')
+  getControlReport(
+    @Query('mes') mes?: string,
+    @Query('nivel') nivel?: string,
+    @Query('grado') grado?: string,
+    @Query('seccion') seccion?: string,
+    @Query('busqueda') busqueda?: string,
+  ) {
+    return this.attendancesService.getControlReport({
+      mes,
+      nivel,
+      grado,
+      seccion,
+      busqueda,
+    });
+  }
+
+  @Get('daily-register/calendar')
+  getDailyRegisterCalendar(
+    @Query('nivel') nivel: string,
+    @Query('grado') grado: string,
+    @Query('seccion') seccion: string,
+    @Query('mes') mes: string,
+    @Query('fecha') fecha?: string,
+  ) {
+    return this.attendancesService.getDailyRegisterCalendar({
+      nivel,
+      grado,
+      seccion,
+      mes,
+      fecha,
+    });
+  }
+
+  @Get('daily-register')
+  getDailyRegister(
+    @Query('nivel') nivel: string,
+    @Query('grado') grado: string,
+    @Query('seccion') seccion: string,
+    @Query('fecha') fecha: string,
+  ) {
+    return this.attendancesService.getDailyRegister({
+      nivel,
+      grado,
+      seccion,
+      fecha,
+    });
+  }
+
+  @Post('daily-register')
+  @RequirePermiso('asistencia.registrar', 'asistencia.editar')
+  saveDailyRegister(@Body() dto: SaveDailyRegisterDto) {
+    return this.attendancesService.saveDailyRegister(dto);
+  }
 
   @Get('alert-settings')
   getAlertSettings() {
@@ -24,6 +113,7 @@ export class AttendancesController {
   }
 
   @Patch('alert-settings')
+  @RequirePermiso('asistencia.editar')
   updateAlertSettings(@Body() dto: UpdateAlertSettingsDto) {
     return this.attendancesService.updateAlertSettings(dto);
   }
@@ -71,6 +161,7 @@ export class AttendancesController {
   }
 
   @Post('justifications')
+  @RequirePermiso('asistencia.registrar', 'asistencia.editar')
   createJustification(@Body() dto: CreateJustificationDto) {
     return this.attendancesService.createJustification(dto);
   }
@@ -81,6 +172,7 @@ export class AttendancesController {
   }
 
   @Post()
+  @RequirePermiso('asistencia.registrar')
   create(@Body() createAttendanceDto: CreateAttendanceDto) {
     return this.attendancesService.create(createAttendanceDto);
   }
@@ -104,6 +196,7 @@ export class AttendancesController {
   }
 
   @Patch(':id')
+  @RequirePermiso('asistencia.editar')
   update(
     @Param('id') id: string,
     @Body() updateAttendanceDto: UpdateAttendanceDto,

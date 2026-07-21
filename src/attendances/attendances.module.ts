@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { StudentsModule } from '../students/students.module';
+import { MaestrosModule } from '../maestros/maestros.module';
 import { AttendancesService } from './attendances.service';
 import { AttendancesController } from './attendances.controller';
 import { AttendanceAlertSettings } from './entities/attendance-alert-settings.entity';
@@ -15,6 +16,7 @@ import { Attendance } from './entities/attendance.entity';
       AttendanceAlertSettings,
     ]),
     StudentsModule,
+    MaestrosModule,
   ],
   controllers: [AttendancesController],
   providers: [AttendancesService],

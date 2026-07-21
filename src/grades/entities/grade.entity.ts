@@ -17,6 +17,9 @@ export class Grade {
   @Column({ length: 20 })
   tipo: 'daily' | 'partial' | 'final';
 
+  @Column({ length: 40, default: '' })
+  componenteCodigo: string;
+
   @Column({ type: 'int' })
   bimestre: number;
 

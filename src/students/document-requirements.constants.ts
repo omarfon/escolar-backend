@@ -174,3 +174,81 @@ export function tiposEquivalentes(a: string, b: string): boolean {
   const nb = normalizarTipoDocumento(b);
   return na === nb || na.includes(nb) || nb.includes(na);
 }
+
+export interface DocumentoAlmacenado {
+  id?: number;
+  tipo: string;
+  numero?: string;
+  estado: 'pendiente' | 'entregado' | 'vencido';
+  fechaEntrega?: string;
+  imagenUrl?: string;
+}
+
+export interface DocumentoMatriculaVista {
+  id?: number;
+  tipo: string;
+  obligatorio: boolean;
+  estado: 'pendiente' | 'entregado' | 'vencido';
+  numero: string;
+  fechaEntrega: string;
+  imagenUrl?: string;
+  registrado: boolean;
+}
+
+/** Combina requisitos del grado con documentos guardados en BD. */
+export function combinarRequisitosConDocumentos(
+  gradoLabel: string,
+  documentos: DocumentoAlmacenado[],
+): DocumentoMatriculaVista[] {
+  const requisitos = requisitosPorGrado(gradoLabel);
+  const usados = new Set<number>();
+
+  const filas: DocumentoMatriculaVista[] = requisitos.map((req) => {
+    const idx = documentos.findIndex(
+      (d, i) => !usados.has(i) && tiposEquivalentes(d.tipo, req.tipo),
+    );
+    if (idx >= 0) {
+      usados.add(idx);
+      const doc = documentos[idx];
+      return {
+        id: doc.id,
+        tipo: req.tipo,
+        obligatorio: req.obligatorio,
+        estado: doc.estado,
+        numero: doc.numero ?? '',
+        fechaEntrega: doc.fechaEntrega ?? '',
+        imagenUrl: doc.imagenUrl,
+        registrado: true,
+      };
+    }
+    return {
+      tipo: req.tipo,
+      obligatorio: req.obligatorio,
+      estado: 'pendiente',
+      numero: '',
+      fechaEntrega: '',
+      registrado: false,
+    };
+  });
+
+  documentos.forEach((doc, i) => {
+    if (usados.has(i)) return;
+    const yaEnRequisitos = requisitos.some((r) =>
+      tiposEquivalentes(r.tipo, doc.tipo),
+    );
+    if (!yaEnRequisitos) {
+      filas.push({
+        id: doc.id,
+        tipo: doc.tipo,
+        obligatorio: false,
+        estado: doc.estado,
+        numero: doc.numero ?? '',
+        fechaEntrega: doc.fechaEntrega ?? '',
+        imagenUrl: doc.imagenUrl,
+        registrado: true,
+      });
+    }
+  });
+
+  return filas;
+}

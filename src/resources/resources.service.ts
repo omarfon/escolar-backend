@@ -1,8 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Student } from '../students/entities/student.entity';
 import { Task } from '../tasks/entities/task.entity';
+import { TasksService } from '../tasks/tasks.service';
 import { CreateResourceDto, UpdateResourceDto } from './dto/resource.dto';
 import {
   ResourceTipo,
@@ -24,6 +24,8 @@ export interface ResourceResponse {
   fechaEntrega: string | null;
   url: string;
   nombreArchivo: string;
+  mimeType: string;
+  tamanoBytes: number;
   visible: boolean;
   fechaPublicacionDisplay: string;
   fechaEntregaDisplay: string | null;
@@ -35,10 +37,9 @@ export class ResourcesService {
   constructor(
     @InjectRepository(TeacherResource)
     private readonly resourcesRepo: Repository<TeacherResource>,
-    @InjectRepository(Student)
-    private readonly studentsRepo: Repository<Student>,
     @InjectRepository(Task)
     private readonly tasksRepo: Repository<Task>,
+    private readonly tasksService: TasksService,
   ) {}
 
   async create(dto: CreateResourceDto): Promise<ResourceResponse> {
@@ -57,6 +58,8 @@ export class ResourcesService {
         fechaEntrega: dto.fechaEntrega ?? null,
         url: dto.url?.trim() ?? '',
         nombreArchivo: dto.nombreArchivo?.trim() ?? '',
+        mimeType: dto.mimeType?.trim() ?? '',
+        tamanoBytes: dto.tamanoBytes ?? 0,
         visible: dto.visible ?? true,
       }),
     );
@@ -70,6 +73,8 @@ export class ResourcesService {
     tipo?: string;
     docente?: string;
     grado?: string;
+    nivel?: string;
+    seccion?: string;
     visible?: boolean;
   }): Promise<ResourceResponse[]> {
     const qb = this.resourcesRepo
@@ -81,6 +86,12 @@ export class ResourcesService {
     if (query?.tipo) qb.andWhere('r.tipo = :tipo', { tipo: query.tipo });
     if (query?.docente) qb.andWhere('r.docente ILIKE :docente', { docente: `%${query.docente}%` });
     if (query?.grado) qb.andWhere('r.grado = :grado', { grado: query.grado });
+    if (query?.nivel) qb.andWhere('r.nivel = :nivel', { nivel: query.nivel });
+    if (query?.seccion) {
+      qb.andWhere('UPPER(TRIM(r.seccion)) = :seccion', {
+        seccion: query.seccion.trim().toUpperCase(),
+      });
+    }
     if (query?.visible !== undefined) {
       qb.andWhere('r.visible = :visible', { visible: query.visible });
     }
@@ -104,6 +115,9 @@ export class ResourcesService {
       url: dto.url !== undefined ? dto.url.trim() : current.url,
       nombreArchivo:
         dto.nombreArchivo !== undefined ? dto.nombreArchivo.trim() : current.nombreArchivo,
+      mimeType: dto.mimeType !== undefined ? dto.mimeType.trim() : current.mimeType,
+      tamanoBytes:
+        dto.tamanoBytes !== undefined ? dto.tamanoBytes : current.tamanoBytes,
       fechaEntrega:
         dto.fechaEntrega !== undefined ? dto.fechaEntrega || null : current.fechaEntrega,
     });
@@ -120,46 +134,7 @@ export class ResourcesService {
   }
 
   private async syncTasks(resource: TeacherResource): Promise<number> {
-    const needsTask =
-      resource.visible &&
-      (resource.tipo === 'tarea' || resource.tipo === 'evaluacion') &&
-      resource.fechaEntrega;
-
-    if (!needsTask) return 0;
-
-    const students = await this.studentsRepo.find({
-      where: {
-        activo: true,
-        nivel: resource.nivel,
-        grado: resource.grado,
-        seccion: resource.seccion,
-      },
-    });
-
-    let created = 0;
-    for (const student of students) {
-      const exists = await this.tasksRepo.findOne({
-        where: {
-          studentId: student.id,
-          titulo: resource.titulo,
-          curso: resource.curso,
-        },
-      });
-      if (exists) continue;
-
-      await this.tasksRepo.save(
-        this.tasksRepo.create({
-          studentId: student.id,
-          titulo: resource.titulo,
-          curso: resource.curso,
-          fechaEntrega: resource.fechaEntrega!,
-          estado: 'PENDING',
-          prioridad: resource.tipo === 'evaluacion' ? 'alta' : 'media',
-        }),
-      );
-      created++;
-    }
-    return created;
+    return this.tasksService.syncTasksForResource(resource.id);
   }
 
   private async toResponse(
@@ -188,6 +163,8 @@ export class ResourcesService {
       fechaEntrega: resource.fechaEntrega,
       url: resource.url,
       nombreArchivo: resource.nombreArchivo,
+      mimeType: resource.mimeType ?? '',
+      tamanoBytes: resource.tamanoBytes ?? 0,
       visible: resource.visible,
       fechaPublicacionDisplay: formatDate(resource.fechaPublicacion),
       fechaEntregaDisplay: resource.fechaEntrega

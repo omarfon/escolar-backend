@@ -14,8 +14,10 @@ import {
   UpdateWaitlistDto,
 } from './dto/waitlist.dto';
 import { WaitlistService } from './waitlist.service';
+import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('waitlist')
+@RequirePermiso('matricula.ver', 'matricula.vacantes')
 export class WaitlistController {
   constructor(private readonly waitlistService: WaitlistService) {}
 

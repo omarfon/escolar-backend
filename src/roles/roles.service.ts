@@ -111,4 +111,9 @@ export class RolesService {
 
     return rows.map((r) => r.permission.codigo);
   }
+
+  async isAdminRole(codigo: string): Promise<boolean> {
+    const role = await this.roleRepo.findOne({ where: { codigo } });
+    return role?.esAdmin ?? false;
+  }
 }

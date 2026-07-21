@@ -45,6 +45,7 @@ export interface ExpedienteResponse {
   anioIngreso: string;
   estado: 'activo' | 'inactivo' | 'retirado';
   activo: boolean;
+  estadoCambioSeccion: 'elegible' | 'cambio_realizado';
   padre: RepresentanteData;
   madre: RepresentanteData;
   apoderado: RepresentanteData;
@@ -165,6 +166,7 @@ export function toExpedienteResponse(
     anioIngreso: student.anioIngreso ?? String(new Date().getFullYear()),
     estado: student.estadoMatricula ?? (student.activo ? 'activo' : 'inactivo'),
     activo: student.activo,
+    estadoCambioSeccion: student.estadoCambioSeccion ?? 'elegible',
     padre: normalizeRepresentante(student.padre),
     madre: normalizeRepresentante(student.madre),
     apoderado: normalizeRepresentante(student.apoderado),

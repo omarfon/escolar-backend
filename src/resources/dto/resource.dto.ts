@@ -17,7 +17,18 @@ export class CreateResourceDto {
   @IsString()
   descripcion?: string;
 
-  @IsIn(['tarea', 'clase', 'lectura', 'video', 'enlace', 'evaluacion'])
+  @IsIn([
+    'tarea',
+    'clase',
+    'lectura',
+    'video',
+    'enlace',
+    'evaluacion',
+    'imagen',
+    'documento',
+    'excel',
+    'ppt',
+  ])
   tipo: string;
 
   @IsOptional()
@@ -56,6 +67,14 @@ export class CreateResourceDto {
   nombreArchivo?: string;
 
   @IsOptional()
+  @IsString()
+  mimeType?: string;
+
+  @IsOptional()
+  @IsInt()
+  tamanoBytes?: number;
+
+  @IsOptional()
   @IsBoolean()
   visible?: boolean;
 }
@@ -71,7 +90,18 @@ export class UpdateResourceDto {
   descripcion?: string;
 
   @IsOptional()
-  @IsIn(['tarea', 'clase', 'lectura', 'video', 'enlace', 'evaluacion'])
+  @IsIn([
+    'tarea',
+    'clase',
+    'lectura',
+    'video',
+    'enlace',
+    'evaluacion',
+    'imagen',
+    'documento',
+    'excel',
+    'ppt',
+  ])
   tipo?: string;
 
   @IsOptional()
@@ -89,6 +119,14 @@ export class UpdateResourceDto {
   @IsOptional()
   @IsString()
   nombreArchivo?: string;
+
+  @IsOptional()
+  @IsString()
+  mimeType?: string;
+
+  @IsOptional()
+  @IsInt()
+  tamanoBytes?: number;
 
   @IsOptional()
   @IsBoolean()

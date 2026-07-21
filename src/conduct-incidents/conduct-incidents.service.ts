@@ -61,30 +61,54 @@ export class ConductIncidentsService {
     filters: ConductIncidentFilters = {},
     page = 1,
     pageSize = 10,
+    resumenPage = 1,
+    resumenPageSize = 10,
   ): Promise<ConductIncidentsPage> {
     const all = await this.buildFilteredList(filters);
     const kpis = buildConductKpis(all);
-    let resumen = buildConductResumen(all);
+    let resumenAll = buildConductResumen(all);
 
     if (filters.nivel && filters.nivel !== 'todos') {
-      resumen = resumen.filter((r) => r.nivel === filters.nivel);
+      resumenAll = resumenAll.filter((r) => r.nivel === filters.nivel);
     }
 
     const grados = [...new Set(all.map((i) => i.grado).filter(Boolean))].sort();
+
+    const safePageSize = Math.min(100, Math.max(1, pageSize));
     const total = all.length;
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const totalPages = Math.max(1, Math.ceil(total / safePageSize));
     const safePage = Math.min(Math.max(1, page), totalPages);
-    const start = (safePage - 1) * pageSize;
-    const items = all.slice(start, start + pageSize);
+    const start = (safePage - 1) * safePageSize;
+    const items = all.slice(start, start + safePageSize);
+
+    const safeResumenPageSize = Math.min(100, Math.max(1, resumenPageSize));
+    const resumenTotal = resumenAll.length;
+    const resumenTotalPages = Math.max(
+      1,
+      Math.ceil(resumenTotal / safeResumenPageSize),
+    );
+    const safeResumenPage = Math.min(
+      Math.max(1, resumenPage),
+      resumenTotalPages,
+    );
+    const resumenStart = (safeResumenPage - 1) * safeResumenPageSize;
+    const resumen = resumenAll.slice(
+      resumenStart,
+      resumenStart + safeResumenPageSize,
+    );
 
     return {
       items,
       total,
       page: safePage,
-      pageSize,
+      pageSize: safePageSize,
       totalPages,
       kpis,
       resumen,
+      resumenTotal,
+      resumenPage: safeResumenPage,
+      resumenPageSize: safeResumenPageSize,
+      resumenTotalPages,
       grados,
     };
   }

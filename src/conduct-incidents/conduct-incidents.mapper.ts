@@ -68,6 +68,10 @@ export interface ConductIncidentsPage {
   totalPages: number;
   kpis: ConductKpis;
   resumen: ConductResumenAlumno[];
+  resumenTotal: number;
+  resumenPage: number;
+  resumenPageSize: number;
+  resumenTotalPages: number;
   grados: string[];
 }
 

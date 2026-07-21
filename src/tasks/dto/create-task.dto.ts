@@ -15,8 +15,8 @@ export class CreateTaskDto {
   @IsDateString()
   fechaEntrega: string;
 
-  @IsIn(['PENDING', 'SUBMITTED', 'OVERDUE'])
-  estado: 'PENDING' | 'SUBMITTED' | 'OVERDUE';
+  @IsIn(['PENDING', 'SUBMITTED', 'OVERDUE', 'GRADED'])
+  estado: 'PENDING' | 'SUBMITTED' | 'OVERDUE' | 'GRADED';
 
   @IsIn(['alta', 'media', 'baja'])
   prioridad: 'alta' | 'media' | 'baja';

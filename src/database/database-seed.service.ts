@@ -1,18 +1,15 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { Student, RepresentanteData } from '../students/entities/student.entity';
+import { Student, RepresentanteData, REPRESENTANTE_VACIO } from '../students/entities/student.entity';
 import { StudentDocument } from '../students/entities/student-document.entity';
-import { StudentAcademicHistory } from '../students/entities/student-academic-history.entity';
 import { Course } from '../courses/entities/course.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
-import { Grade } from '../grades/entities/grade.entity';
 import { Attendance } from '../attendances/entities/attendance.entity';
 import { AttendanceJustification } from '../attendances/entities/attendance-justification.entity';
 import { AttendanceAlertSettings } from '../attendances/entities/attendance-alert-settings.entity';
 import { Task } from '../tasks/entities/task.entity';
 import { Announcement } from '../announcements/entities/announcement.entity';
 import { Institution } from '../institution/entities/institution.entity';
-import { Campus } from '../institution/entities/campus.entity';
 import { EducationLevel } from '../institution/entities/education-level.entity';
 import { GradeLevel } from '../institution/entities/grade-level.entity';
 import { GradeSection } from '../institution/entities/grade-section.entity';
@@ -25,50 +22,212 @@ import { In } from 'typeorm';
 import { WaitlistEntry } from '../waitlist/entities/waitlist-entry.entity';
 import { ActasService } from '../actas/actas.service';
 import { EvaluationActa } from '../actas/entities/evaluation-acta.entity';
-import { SchoolEvent } from '../events/entities/school-event.entity';
+import { Evento } from '../events/entities/evento.entity';
+import { MAESTRO_EVENTOS_SEED } from '../maestros/eventos/eventos-seed.data';
 import { TeacherResource } from '../resources/entities/teacher-resource.entity';
 import { ParentStudent } from '../parents/entities/parent-student.entity';
-import { AuditLog } from '../audit-logs/entities/audit-log.entity';
 import { ConductIncident } from '../conduct-incidents/entities/conduct-incident.entity';
-import { Classroom } from '../classrooms/entities/classroom.entity';
+import { Salon } from '../maestros/salones/entities/salon.entity';
 import {
   defaultAforoForNivel,
   gradoInstitucionalToMatricula,
-} from '../classrooms/classrooms.util';
+} from '../maestros/salones/salones.util';
+import { CursosMaestrosService } from '../maestros/cursos/cursos.service';
+import { CurriculaService } from '../curricula/curricula.service';
+import { CompetencyEvaluationsService } from '../competency-evaluations/competency-evaluations.service';
+import {
+  ASISTENCIA_STUDENTS_SEED,
+} from './asistencia-seed.data';
+import {
+  STUDENT_HISTORIAL_SEED,
+  STUDENT_PROFILE_SEED,
+} from './student-profile-seed.data';
+import { STUDENT_DOCUMENTS_SEED } from './student-documents-seed.data';
+import { gradoLabelFromParts } from '../students/students.mapper';
+import {
+  requisitosPorGrado,
+  tiposEquivalentes,
+} from '../students/document-requirements.constants';
+import { DocumentoEstado } from '../students/entities/student-document.entity';
+import { StudentAcademicHistory } from '../students/entities/student-academic-history.entity';
+import { ENTREGAS_DEMO_SALON, ENTREGAS_DEMO_SUBMISSIONS, buildDemoPdfBuffer } from './entregas-seed.data';
+import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { TemarioService } from '../temario/temario.service';
+import { FeriadosMaestrosService } from '../maestros/feriados/feriados.service';
+import { FormulasEvaluacionMaestrosService } from '../maestros/formulas-evaluacion/formulas-evaluacion.service';
+import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
+import { EventosMaestrosService } from '../maestros/eventos/eventos.service';
+import { FaltasReconocimientosService } from '../maestros/faltas-reconocimientos/faltas-reconocimientos.service';
+import { TasksService } from '../tasks/tasks.service';
 
 @Injectable()
-export class DatabaseSeedService implements OnModuleInit {
+export class DatabaseSeedService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly actasService: ActasService,
+    private readonly cursosMaestrosService: CursosMaestrosService,
+    private readonly curriculaService: CurriculaService,
+    private readonly competencyEvaluationsService: CompetencyEvaluationsService,
+    private readonly temarioService: TemarioService,
+    private readonly feriadosService: FeriadosMaestrosService,
+    private readonly formulasService: FormulasEvaluacionMaestrosService,
+    private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly eventosMaestrosService: EventosMaestrosService,
+    private readonly faltasService: FaltasReconocimientosService,
+    private readonly tasksService: TasksService,
   ) {}
 
   private studentId = 5;
 
-  async onModuleInit(): Promise<void> {
+  /** Carga datos demo en PostgreSQL. Ejecutar con: npm run db:seed */
+  async runSeed(): Promise<void> {
     await this.seedStudents();
     await this.seedExpedientes();
+    await this.ensureStudentsForAsistencia();
     await this.ensureStudentRepresentatives();
+    await this.ensureStudentProfiles();
+    await this.ensureStudentAcademicHistory();
+    await this.ensureStudentDocuments();
+    await this.ensureDemoParentFamily();
     await this.ensureConductIncidents();
     await this.seedCourses();
     await this.seedSchedules();
-    await this.seedGrades();
-    await this.seedAttendances();
     await this.seedJustifications();
     await this.seedAttendanceAlertSettings();
     await this.seedTasks();
     await this.seedAnnouncements();
+    await this.ensureDocenteAnnouncements();
     await this.seedInstitution();
     await this.seedEducationLevels();
-    await this.seedClassrooms();
+    await this.seedMaestrosCatalogs();
+    // Salones, horarios y asignaciones: npm run db:horarios-data
     await this.seedRoles();
     await this.seedUsers();
+    await this.seedMaestrosCursosYCurricula();
+    await this.seedCompetencyEvaluations();
     await this.seedWaitlist();
     await this.seedActas();
     await this.seedEvents();
     await this.seedResources();
+    await this.ensureEntregasDemoData();
     await this.seedParentStudents();
-    await this.seedAuditLogs();
+    await this.ensureParentStudentLinks();
+    await this.seedTemario();
+  }
+
+  /** Solo matrícula del salón demo y sincronización de tareas para entregas. */
+  async seedEntregasDemo(): Promise<void> {
+    await this.seedStudents();
+    await this.ensureDemoParentFamily();
+    await this.ensureStudentRepresentatives();
+    await this.seedResources();
+    await this.ensureEntregasDemoData();
+    await this.ensureParentStudentLinks();
+  }
+
+  /** Sincroniza vínculos apoderado ↔ alumno en parent_students desde BD. */
+  async syncParentLinksFromDb(): Promise<void> {
+    await this.ensureDemoParentFamily();
+    await this.ensureStudentRepresentatives();
+    await this.ensureStudentProfiles();
+    await this.ensureStudentAcademicHistory();
+    await this.ensureParentStudentLinks();
+  }
+
+  /** Completa fecha de nacimiento, dirección y apoderados desde catálogo demo. */
+  async seedStudentProfilesFromDb(): Promise<void> {
+    await this.ensureStudentsForAsistencia();
+    await this.ensureStudentProfiles();
+    await this.ensureStudentAcademicHistory();
+  }
+
+  /** Sincroniza requisitos documentales con estados demo (entregado / pendiente / vencido). */
+  async seedStudentDocumentsFromDb(): Promise<void> {
+    await this.ensureStudentsForAsistencia();
+    await this.ensureStudentDocuments(true);
+  }
+
+  /**
+   * Familia demo coherente del portal padre (Maria Lopez Quispe):
+   * Juan, Lucia y Carlos Perez Lopez — mismos padres.
+   */
+  private async ensureDemoParentFamily(): Promise<void> {
+    const repo = this.dataSource.getRepository(Student);
+    const family = [
+      { email: 'estudiante@escolar.pe', nombre: 'Juan', apellido: 'Perez Lopez' },
+      { email: 'l.torres@estudiante.pe', nombre: 'Lucia', apellido: 'Perez Lopez' },
+      { email: 'c.mendoza@estudiante.pe', nombre: 'Carlos', apellido: 'Perez Lopez' },
+    ] as const;
+
+    const padre = this.rep(
+      'Carlos',
+      'Perez Mamani',
+      '40123456',
+      '987001001',
+      'cperez@gmail.com',
+      'Ingeniero Civil',
+    );
+    const madre = this.rep(
+      'Maria',
+      'Lopez Quispe',
+      '46678123',
+      '987016016',
+      'padre@escolar.pe',
+      'Apoderada',
+    );
+
+    for (const row of family) {
+      const student = await repo.findOneBy({ email: row.email });
+      if (!student) continue;
+
+      let changed = false;
+      if (student.nombre !== row.nombre) {
+        student.nombre = row.nombre;
+        changed = true;
+      }
+      if (student.apellido !== row.apellido) {
+        student.apellido = row.apellido;
+        changed = true;
+      }
+      if (JSON.stringify(student.padre) !== JSON.stringify(padre)) {
+        student.padre = { ...padre };
+        changed = true;
+      }
+      if (JSON.stringify(student.madre) !== JSON.stringify(madre)) {
+        student.madre = { ...madre };
+        changed = true;
+      }
+      if (JSON.stringify(student.apoderado) !== JSON.stringify(madre)) {
+        student.apoderado = { ...madre };
+        changed = true;
+      }
+      if (changed) {
+        await repo.save(student);
+      }
+    }
+  }
+
+  private async seedMaestrosCatalogs(): Promise<void> {
+    await this.feriadosService.seedCatalogIfEmpty();
+    await this.formulasService.seedCatalogIfEmpty();
+    await this.periodosService.seedCatalogIfEmpty();
+    await this.eventosMaestrosService.seedCatalogIfEmpty();
+    await this.faltasService.seedCatalogIfEmpty();
+  }
+
+  private async seedTemario(): Promise<void> {
+    await this.temarioService.seedTemarioIfEmpty(2026);
+  }
+
+  private async seedMaestrosCursosYCurricula(): Promise<void> {
+    await this.cursosMaestrosService.seedCatalogIfEmpty();
+    await this.curriculaService.seedCatalogBundle();
+  }
+
+  private async seedCompetencyEvaluations(): Promise<void> {
+    await this.competencyEvaluationsService.seedIfEmpty();
   }
 
   private async seedWaitlist() {
@@ -174,7 +333,7 @@ export class DatabaseSeedService implements OnModuleInit {
     }
     const saved = await repo.save({
       nombre: 'Juan',
-      apellido: 'Perez',
+      apellido: 'Perez Lopez',
       email: 'estudiante@escolar.pe',
       nivel: 'Primaria',
       grado: '5°',
@@ -192,27 +351,27 @@ export class DatabaseSeedService implements OnModuleInit {
       conductaNota: 'A',
       padre: {
         nombres: 'Carlos',
-        apellidos: 'Perez',
+        apellidos: 'Perez Mamani',
         dni: '40123456',
         telefono: '987001001',
         email: 'cperez@gmail.com',
-        trabajo: 'Ingeniero',
+        trabajo: 'Ingeniero Civil',
       },
       madre: {
-        nombres: 'Rosa',
-        apellidos: 'Mamani',
-        dni: '40123457',
-        telefono: '987001002',
-        email: 'rmamani@gmail.com',
-        trabajo: 'Enfermera',
+        nombres: 'Maria',
+        apellidos: 'Lopez Quispe',
+        dni: '46678123',
+        telefono: '987016016',
+        email: 'padre@escolar.pe',
+        trabajo: 'Apoderada',
       },
       apoderado: {
-        nombres: '',
-        apellidos: '',
-        dni: '',
-        telefono: '',
-        email: '',
-        trabajo: '',
+        nombres: 'Maria',
+        apellidos: 'Lopez Quispe',
+        dni: '46678123',
+        telefono: '987016016',
+        email: 'padre@escolar.pe',
+        trabajo: 'Apoderada',
       },
     });
     this.studentId = saved.id;
@@ -220,33 +379,108 @@ export class DatabaseSeedService implements OnModuleInit {
   }
 
   private async seedDemoStudents(repo: import('typeorm').Repository<Student>) {
-    const demo = [
-      { nombre: 'Lucia', apellido: 'Torres Vega', email: 'l.torres@estudiante.pe', nivel: 'Primaria', grado: '5°', seccion: 'A', activo: true },
-      { nombre: 'Carlos', apellido: 'Mendoza Ruiz', email: 'c.mendoza@estudiante.pe', nivel: 'Primaria', grado: '5°', seccion: 'A', activo: true },
-      { nombre: 'Ana', apellido: 'Garcia Lima', email: 'a.garcia@estudiante.pe', nivel: 'Primaria', grado: '5°', seccion: 'B', activo: true },
-      { nombre: 'Jose', apellido: 'Paredes Cano', email: 'j.paredes@estudiante.pe', nivel: 'Primaria', grado: '5°', seccion: 'B', activo: true },
-      { nombre: 'Maria', apellido: 'Quispe Rojas', email: 'm.quispe@estudiante.pe', nivel: 'Primaria', grado: '4°', seccion: 'A', activo: true },
-      { nombre: 'Luis', apellido: 'Castillo Vera', email: 'l.castillo@estudiante.pe', nivel: 'Primaria', grado: '4°', seccion: 'A', activo: true },
-      { nombre: 'Sofia', apellido: 'Ramos Cruz', email: 's.ramos@estudiante.pe', nivel: 'Secundaria', grado: '2°', seccion: 'A', activo: true },
-      { nombre: 'Diego', apellido: 'Fernandez Mar', email: 'd.fernandez@estudiante.pe', nivel: 'Secundaria', grado: '2°', seccion: 'B', activo: true },
-    ];
+    // Mantener compatibilidad: el catálogo completo vive en ensureStudentsForAsistencia.
+    await this.ensureStudentsForAsistencia();
+  }
 
-    const existentes = await repo.find({ select: { email: true } });
+  /** Garantiza alumnos activos en students para registro diario por nivel/grado/sección. */
+  private async ensureStudentsForAsistencia(): Promise<void> {
+    const repo = this.dataSource.getRepository(Student);
+    const existentes = await repo.find({ select: { id: true, email: true, dni: true } });
     const emails = new Set(existentes.map((s) => s.email));
-    for (const student of demo) {
-      if (emails.has(student.email)) continue;
+    const dnis = new Set(existentes.map((s) => s.dni).filter(Boolean));
+
+    for (const row of ASISTENCIA_STUDENTS_SEED) {
+      if (emails.has(row.email) || dnis.has(row.dni)) continue;
       try {
-        await repo.save(repo.create(student));
+        await repo.save(
+          repo.create({
+            nombre: row.nombre,
+            apellido: row.apellido,
+            email: row.email,
+            dni: row.dni,
+            nivel: row.nivel,
+            grado: row.grado,
+            seccion: row.seccion.toUpperCase(),
+            sexo: row.sexo ?? 'M',
+            activo: true,
+            estadoMatricula: 'activo',
+            estadoCambioSeccion: 'elegible',
+            anioIngreso: '2024',
+            conductaNota: 'AD',
+            codigo: '',
+            direccion: '',
+            padre: REPRESENTANTE_VACIO,
+            madre: REPRESENTANTE_VACIO,
+            apoderado: REPRESENTANTE_VACIO,
+          }),
+        );
+        emails.add(row.email);
+        dnis.add(row.dni);
       } catch {
         // Ignorar duplicados residuales
       }
+    }
+
+    // Asegurar matrícula activa en alumnos demo ya existentes
+    const alumnos = await repo.find({
+      where: { email: In(ASISTENCIA_STUDENTS_SEED.map((s) => s.email)) },
+    });
+    for (const student of alumnos) {
+      let changed = false;
+      if (!student.activo) {
+        student.activo = true;
+        changed = true;
+      }
+      if (student.estadoMatricula !== 'activo') {
+        student.estadoMatricula = 'activo';
+        changed = true;
+      }
+      if (!student.dni) {
+        const seed = ASISTENCIA_STUDENTS_SEED.find((s) => s.email === student.email);
+        if (seed?.dni) {
+          student.dni = seed.dni;
+          changed = true;
+        }
+      }
+      if (!student.codigo) {
+        student.codigo = `2026-${String(student.id).padStart(3, '0')}`;
+        changed = true;
+      }
+      if (changed) await repo.save(student);
+    }
+
+    // Juan Pérez (usuario estudiante) — Primaria 5° A
+    const juan = await repo.findOneBy({ email: 'estudiante@escolar.pe' });
+    if (juan) {
+      let changed = false;
+      if (juan.nivel !== 'Primaria') {
+        juan.nivel = 'Primaria';
+        changed = true;
+      }
+      if (juan.grado !== '5°') {
+        juan.grado = '5°';
+        changed = true;
+      }
+      if (juan.seccion !== 'A') {
+        juan.seccion = 'A';
+        changed = true;
+      }
+      if (!juan.activo) {
+        juan.activo = true;
+        changed = true;
+      }
+      if (juan.estadoMatricula !== 'activo') {
+        juan.estadoMatricula = 'activo';
+        changed = true;
+      }
+      if (changed) await repo.save(juan);
     }
   }
 
   private async seedExpedientes() {
     const studentRepo = this.dataSource.getRepository(Student);
     const docRepo = this.dataSource.getRepository(StudentDocument);
-    const historyRepo = this.dataSource.getRepository(StudentAcademicHistory);
 
     const students = await studentRepo.find();
     if (!students.length) return;
@@ -254,13 +488,6 @@ export class DatabaseSeedService implements OnModuleInit {
     const enrichments: Record<
       string,
       Partial<Student> & {
-        historial?: Array<{
-          anio: string;
-          grado: string;
-          seccion: string;
-          promedio: number;
-          estado: string;
-        }>;
         documentos?: Array<{
           tipo: string;
           numero: string;
@@ -275,10 +502,6 @@ export class DatabaseSeedService implements OnModuleInit {
         sexo: 'M',
         direccion: 'Av. Los Heroes 234, SJM',
         codigo: '2026-001',
-        historial: [
-          { anio: '2025', grado: '4° Primaria', seccion: 'A', promedio: 15.2, estado: 'Promovido' },
-          { anio: '2024', grado: '3° Primaria', seccion: 'B', promedio: 14.8, estado: 'Promovido' },
-        ],
         documentos: [
           { tipo: 'DNI del alumno', numero: '71234567', estado: 'entregado', fechaEntrega: '10/03/2025' },
           { tipo: 'Partida de Nacimiento', numero: '2012-00123', estado: 'entregado', fechaEntrega: '10/03/2025' },
@@ -293,9 +516,6 @@ export class DatabaseSeedService implements OnModuleInit {
         direccion: 'Jr. Las Flores 456, SJM',
         codigo: '2026-002',
         conductaNota: 'AD',
-        historial: [
-          { anio: '2025', grado: '4° Primaria', seccion: 'A', promedio: 16.1, estado: 'Promovido' },
-        ],
         documentos: [
           { tipo: 'DNI del alumno', numero: '72345678', estado: 'entregado', fechaEntrega: '12/03/2025' },
           { tipo: 'Ficha de Matrícula (FUT)', numero: 'FUT-2026-002', estado: 'entregado', fechaEntrega: '12/03/2025' },
@@ -309,9 +529,6 @@ export class DatabaseSeedService implements OnModuleInit {
         codigo: '2026-003',
         alergias: 'Polen',
         condicionesSalud: 'Rinitis',
-        historial: [
-          { anio: '2025', grado: '4° Primaria', seccion: 'B', promedio: 15.5, estado: 'Promovido' },
-        ],
         documentos: [
           { tipo: 'DNI del alumno', numero: '73456789', estado: 'entregado', fechaEntrega: '11/03/2025' },
           { tipo: 'Ficha de Salud', numero: '', estado: 'pendiente', fechaEntrega: '' },
@@ -369,15 +586,6 @@ export class DatabaseSeedService implements OnModuleInit {
           ),
         );
       }
-
-      const histCount = await historyRepo.count({ where: { studentId: student.id } });
-      if (!histCount && extra?.historial?.length) {
-        await historyRepo.save(
-          extra.historial.map((row) =>
-            historyRepo.create({ studentId: student.id, ...row }),
-          ),
-        );
-      }
     }
   }
 
@@ -415,20 +623,21 @@ export class DatabaseSeedService implements OnModuleInit {
     { padre: RepresentanteData; madre: RepresentanteData; apoderado?: RepresentanteData }
   > {
     return {
+      // Familia coherente: padre Carlos Perez + madre/apoderada Maria Lopez Quispe
       'estudiante@escolar.pe': {
         padre: this.rep('Carlos', 'Perez Mamani', '40123456', '987001001', 'cperez@gmail.com', 'Ingeniero Civil'),
-        madre: this.rep('Rosa', 'Mamani Quispe', '40123457', '987001002', 'rmamani@gmail.com', 'Enfermera'),
-        apoderado: this.rep('Rosa', 'Mamani Quispe', '40123457', '987001002', 'rmamani@gmail.com', 'Enfermera'),
+        madre: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
+        apoderado: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
       },
       'l.torres@estudiante.pe': {
-        padre: this.rep('Roberto', 'Torres Vega', '40234561', '987102201', 'r.torres@gmail.com', 'Contador'),
-        madre: this.rep('Elena', 'Vega Salazar', '40234562', '987102202', 'e.vega@gmail.com', 'Docente'),
-        apoderado: this.rep('Roberto', 'Torres Vega', '40234561', '987102201', 'r.torres@gmail.com', 'Contador'),
+        padre: this.rep('Carlos', 'Perez Mamani', '40123456', '987001001', 'cperez@gmail.com', 'Ingeniero Civil'),
+        madre: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
+        apoderado: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
       },
       'c.mendoza@estudiante.pe': {
-        padre: this.rep('Fernando', 'Mendoza Ruiz', '40345671', '987103301', 'f.mendoza@gmail.com', 'Tecnico Electricista'),
-        madre: this.rep('Lucia', 'Ruiz Paredes', '40345672', '987103302', 'l.ruiz@gmail.com', 'Administrativa'),
-        apoderado: this.rep('Lucia', 'Ruiz Paredes', '40345672', '987103302', 'l.ruiz@gmail.com', 'Administrativa'),
+        padre: this.rep('Carlos', 'Perez Mamani', '40123456', '987001001', 'cperez@gmail.com', 'Ingeniero Civil'),
+        madre: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
+        apoderado: this.rep('Maria', 'Lopez Quispe', '46678123', '987016016', 'padre@escolar.pe', 'Apoderada'),
       },
       'a.garcia@estudiante.pe': {
         padre: this.rep('Antonio', 'Garcia Lima', '40456781', '987104401', 'a.garcia.padre@gmail.com', 'Comerciante'),
@@ -569,6 +778,173 @@ export class DatabaseSeedService implements OnModuleInit {
 
       if (changed) {
         await repo.save(student);
+      }
+    }
+  }
+
+  private async ensureStudentProfiles(): Promise<void> {
+    const repo = this.dataSource.getRepository(Student);
+
+    for (const profile of STUDENT_PROFILE_SEED) {
+      const student = await repo.findOneBy({ email: profile.email });
+      if (!student) continue;
+
+      let changed = false;
+      if (!student.fechaNac && profile.fechaNac) {
+        student.fechaNac = profile.fechaNac;
+        changed = true;
+      }
+      if (!student.direccion?.trim() && profile.direccion) {
+        student.direccion = profile.direccion;
+        changed = true;
+      }
+      if (profile.grupoSanguineo && !student.grupoSanguineo?.trim()) {
+        student.grupoSanguineo = profile.grupoSanguineo;
+        changed = true;
+      }
+      if (profile.alergias && !student.alergias?.trim()) {
+        student.alergias = profile.alergias;
+        changed = true;
+      }
+      if (profile.condicionesSalud && !student.condicionesSalud?.trim()) {
+        student.condicionesSalud = profile.condicionesSalud;
+        changed = true;
+      }
+      if (profile.anioIngreso && !student.anioIngreso?.trim()) {
+        student.anioIngreso = profile.anioIngreso;
+        changed = true;
+      }
+
+      if (this.shouldReplaceRep(student.padre)) {
+        student.padre = { ...profile.padre };
+        changed = true;
+      }
+      if (this.shouldReplaceRep(student.madre)) {
+        student.madre = { ...profile.madre };
+        changed = true;
+      }
+      if (this.shouldReplaceRep(student.apoderado)) {
+        student.apoderado = { ...profile.apoderado };
+        changed = true;
+      }
+
+      if (changed) {
+        await repo.save(student);
+      }
+    }
+  }
+
+  private async ensureStudentAcademicHistory(): Promise<void> {
+    const studentRepo = this.dataSource.getRepository(Student);
+    const historyRepo = this.dataSource.getRepository(StudentAcademicHistory);
+
+    for (const [email, rows] of Object.entries(STUDENT_HISTORIAL_SEED)) {
+      const student = await studentRepo.findOneBy({ email });
+      if (!student) continue;
+
+      for (const row of rows) {
+        const exists = await historyRepo.findOne({
+          where: { studentId: student.id, anio: row.anio },
+        });
+        if (exists) continue;
+
+        await historyRepo.save(
+          historyRepo.create({
+            studentId: student.id,
+            anio: row.anio,
+            grado: row.grado,
+            seccion: row.seccion,
+            promedio: row.promedio,
+            estado: row.estado,
+          }),
+        );
+      }
+    }
+  }
+
+  private resolveDocumentSeed(
+    student: Student,
+    tipo: string,
+    idx: number,
+    total: number,
+  ): {
+    numero: string;
+    estado: DocumentoEstado;
+    fechaEntrega: string;
+  } {
+    const explicit = STUDENT_DOCUMENTS_SEED[student.email];
+    const match = explicit?.find((d) => tiposEquivalentes(d.tipo, tipo));
+    if (match) {
+      return {
+        numero: match.numero ?? '',
+        estado: match.estado,
+        fechaEntrega: match.fechaEntrega ?? '',
+      };
+    }
+
+    const bucket = student.id % 4;
+    let estado: DocumentoEstado = 'pendiente';
+    if (bucket === 3) {
+      estado = 'entregado';
+    } else if (bucket === 2 && idx < Math.ceil(total * 0.75)) {
+      estado = 'entregado';
+    } else if (bucket === 1 && idx < Math.ceil(total * 0.5)) {
+      estado = 'entregado';
+    }
+
+    return {
+      numero: estado === 'entregado' ? `DOC-${student.id}-${idx + 1}` : '',
+      estado,
+      fechaEntrega: estado === 'entregado' ? '15/03/2025' : '',
+    };
+  }
+
+  private async ensureStudentDocuments(force = false): Promise<void> {
+    const studentRepo = this.dataSource.getRepository(Student);
+    const docRepo = this.dataSource.getRepository(StudentDocument);
+    const students = await studentRepo.find({
+      where: { activo: true },
+      order: { id: 'ASC' },
+    });
+
+    for (const student of students) {
+      const gradoLabel = gradoLabelFromParts(student.nivel, student.grado);
+      const requisitos = requisitosPorGrado(gradoLabel);
+      if (!requisitos.length) continue;
+
+      if (force) {
+        await docRepo.delete({ studentId: student.id });
+      }
+
+      const existing = force
+        ? []
+        : await docRepo.find({ where: { studentId: student.id } });
+
+      const docsToSave: StudentDocument[] = [];
+
+      requisitos.forEach((req, idx) => {
+        const match = existing.find((d) => tiposEquivalentes(d.tipo, req.tipo));
+        if (match && !force) return;
+
+        const seed = this.resolveDocumentSeed(
+          student,
+          req.tipo,
+          idx,
+          requisitos.length,
+        );
+        docsToSave.push(
+          docRepo.create({
+            studentId: student.id,
+            tipo: req.tipo,
+            numero: seed.numero,
+            estado: seed.estado,
+            fechaEntrega: seed.fechaEntrega,
+          }),
+        );
+      });
+
+      if (docsToSave.length) {
+        await docRepo.save(docsToSave);
       }
     }
   }
@@ -716,104 +1092,6 @@ export class DatabaseSeedService implements OnModuleInit {
     ]);
   }
 
-  private async seedGrades() {
-    const repo = this.dataSource.getRepository(Grade);
-    if (await repo.count()) return;
-
-    const studentRepo = this.dataSource.getRepository(Student);
-    const students = await studentRepo.find({ where: { activo: true } });
-    const cursos = [
-      'Matemática',
-      'Comprensión Lectora',
-      'Ciencia y Tecnología',
-      'Comunicación',
-    ];
-
-    const records: Partial<Grade>[] = [];
-    for (const student of students) {
-      for (const curso of cursos) {
-        for (let bim = 1; bim <= 2; bim++) {
-          const base =
-            10 + ((student.id * 7 + curso.length * 3 + bim * 5) % 9);
-          const mes = bim === 1 ? '03' : '06';
-          records.push(
-            {
-              studentId: student.id,
-              curso,
-              tipo: 'daily',
-              bimestre: bim,
-              nota: Math.min(20, base),
-              fechaEvaluacion: `2026-${mes}-05`,
-              descripcion: 'Control diario',
-            },
-            {
-              studentId: student.id,
-              curso,
-              tipo: 'partial',
-              bimestre: bim,
-              nota: Math.min(20, base + 1),
-              fechaEvaluacion: `2026-${mes}-15`,
-              descripcion: 'Examen parcial',
-            },
-            {
-              studentId: student.id,
-              curso,
-              tipo: 'final',
-              bimestre: bim,
-              nota: Math.min(20, base + 2),
-              fechaEvaluacion: `2026-${mes}-28`,
-              descripcion: 'Final bimestral',
-            },
-          );
-        }
-      }
-    }
-
-    await repo.save(records);
-  }
-
-  private async seedAttendances() {
-    const repo = this.dataSource.getRepository(Attendance);
-    if (await repo.count()) return;
-
-    const studentRepo = this.dataSource.getRepository(Student);
-    const students = await studentRepo.find({ where: { activo: true } });
-    const junDates = [
-      '2026-06-02',
-      '2026-06-03',
-      '2026-06-05',
-      '2026-06-09',
-      '2026-06-10',
-      '2026-06-12',
-      '2026-06-15',
-      '2026-06-16',
-    ];
-
-    const records: Partial<Attendance>[] = [];
-    students.forEach((student, i) => {
-      junDates.forEach((fecha, j) => {
-        let estado: 'P' | 'F' | 'T' | 'J' = 'P';
-        if ((i + j) % 7 === 0) estado = 'F';
-        else if ((i + j) % 5 === 0) estado = 'T';
-        else if ((i + j) % 11 === 0) estado = 'J';
-
-        records.push({
-          studentId: student.id,
-          fecha,
-          estado,
-          observacion:
-            estado === 'F'
-              ? 'Inasistencia sin justificar'
-              : estado === 'J'
-                ? 'Enfermedad'
-                : undefined,
-        });
-      });
-    });
-
-    await repo.save(records);
-  }
-
   private async seedJustifications() {
     const repo = this.dataSource.getRepository(AttendanceJustification);
     if (await repo.count()) return;
@@ -938,12 +1216,63 @@ export class DatabaseSeedService implements OnModuleInit {
         fechaVencimiento: '2026-06-20',
         habilitado: true,
       },
+      {
+        titulo: 'Reunión pedagógica — 2° Bimestre',
+        cuerpo: 'Todos los docentes deben asistir el lunes 23 de junio a las 15:00 en la sala de profesores.',
+        tipo: 'academico',
+        destinatarios: 'docentes',
+        prioridad: 'alta',
+        fechaPublicacion: '2026-06-15',
+        fechaVencimiento: '2026-06-23',
+        habilitado: true,
+      },
+      {
+        titulo: 'Suspensión de clases — Día del Maestro',
+        cuerpo: 'No habrá clases el 18 de julio. Se reanudan actividades el 21 de julio.',
+        tipo: 'general',
+        destinatarios: 'todos',
+        prioridad: 'media',
+        fechaPublicacion: '2026-07-10',
+        fechaVencimiento: '2026-07-18',
+        habilitado: true,
+      },
+    ]);
+  }
+
+  /** Anuncios para el portal docente cuando la BD ya tenía seed antiguo sin avisos a docentes. */
+  private async ensureDocenteAnnouncements() {
+    const repo = this.dataSource.getRepository(Announcement);
+    const existentes = await repo.find({
+      where: [{ destinatarios: 'docentes' }, { destinatarios: 'todos' }],
+    });
+    if (existentes.some((a) => a.habilitado)) return;
+
+    await repo.save([
+      {
+        titulo: 'Reunión pedagógica — 2° Bimestre',
+        cuerpo: 'Todos los docentes deben asistir el lunes 23 de junio a las 15:00 en la sala de profesores.',
+        tipo: 'academico',
+        destinatarios: 'docentes',
+        prioridad: 'alta',
+        fechaPublicacion: '2026-06-15',
+        fechaVencimiento: '2026-06-23',
+        habilitado: true,
+      },
+      {
+        titulo: 'Suspensión de clases — Día del Maestro',
+        cuerpo: 'No habrá clases el 18 de julio. Se reanudan actividades el 21 de julio.',
+        tipo: 'general',
+        destinatarios: 'todos',
+        prioridad: 'media',
+        fechaPublicacion: '2026-07-10',
+        fechaVencimiento: '2026-07-18',
+        habilitado: true,
+      },
     ]);
   }
 
   private async seedInstitution() {
     const instRepo = this.dataSource.getRepository(Institution);
-    const campusRepo = this.dataSource.getRepository(Campus);
 
     if (!(await instRepo.count())) {
       await instRepo.save({
@@ -992,39 +1321,6 @@ export class DatabaseSeedService implements OnModuleInit {
         ],
       });
     }
-
-    if (!(await campusRepo.count())) {
-      await campusRepo.save([
-        {
-          nombre: 'Sede Central',
-          codigo: 'SEDE-01',
-          direccion: 'Av. Los Heroes 123',
-          distrito: 'San Juan de Miraflores',
-          provincia: 'Lima',
-          region: 'Lima',
-          telefono: '01-5551234',
-          email: 'central@sanmartin.edu.pe',
-          director: 'Juan Carlos Perez Torres',
-          niveles: ['Primaria', 'Secundaria'],
-          turnos: ['Manana', 'Tarde'],
-          estado: 'activo',
-        },
-        {
-          nombre: 'Sede Inicial',
-          codigo: 'SEDE-02',
-          direccion: 'Jr. Las Flores 456',
-          distrito: 'San Juan de Miraflores',
-          provincia: 'Lima',
-          region: 'Lima',
-          telefono: '01-5554321',
-          email: 'inicial@sanmartin.edu.pe',
-          director: 'Rosa Gutierrez Lima',
-          niveles: ['Inicial'],
-          turnos: ['Manana'],
-          estado: 'activo',
-        },
-      ]);
-    }
   }
 
   private async seedEducationLevels() {
@@ -1064,7 +1360,7 @@ export class DatabaseSeedService implements OnModuleInit {
           { nombre: '2 Grado', secciones: ['A', 'B'] },
           { nombre: '3 Grado', secciones: ['A', 'B'] },
           { nombre: '4 Grado', secciones: ['A'] },
-          { nombre: '5 Grado', secciones: ['A'] },
+          { nombre: '5 Grado', secciones: ['A', 'B'] },
           { nombre: '6 Grado', secciones: ['A'] },
         ],
       },
@@ -1099,8 +1395,8 @@ export class DatabaseSeedService implements OnModuleInit {
     }
   }
 
-  private async seedClassrooms(): Promise<void> {
-    const repo = this.dataSource.getRepository(Classroom);
+  private async seedSalones(): Promise<void> {
+    const repo = this.dataSource.getRepository(Salon);
     const anioEscolar = 2026;
     const existing = await repo.count({ where: { anioEscolar } });
     if (existing > 0) return;
@@ -1142,7 +1438,7 @@ export class DatabaseSeedService implements OnModuleInit {
       { nombres: 'Ana', apellidos: 'Garcia Lopez', dni: '45234789', email: 'director@escolar.pe', username: 'director', telefono: '987002002', rol: 'DIRECTOR', sede: 'Sede Central', estado: 'activo', cargo: 'Directora General', password: 'admin123', ultimoAcceso: new Date('2026-06-15T07:55:00') },
       { nombres: 'Luis', apellidos: 'Ramirez Silva', dni: '45345890', email: 'docente@escolar.pe', username: 'docente', telefono: '987003003', rol: 'DOCENTE', sede: 'Sede Central', estado: 'activo', cargo: 'Docente de Matematicas', password: 'admin123', ultimoAcceso: new Date('2026-06-15T09:10:00') },
       { nombres: 'Maria', apellidos: 'Flores Quispe', dni: '45456902', email: 'm.flores@escolar.pe', username: 'm.flores', telefono: '987004004', rol: 'DOCENTE', sede: 'Sede Central', estado: 'activo', cargo: 'Docente de Comunicacion', password: 'admin123', ultimoAcceso: new Date('2026-06-14T16:45:00') },
-      { nombres: 'Juan', apellidos: 'Perez Mamani', dni: '45567012', email: 'estudiante@escolar.pe', username: 'estudiante', telefono: '987005005', rol: 'ESTUDIANTE', sede: 'Sede Central', estado: 'activo', cargo: 'Estudiante', password: 'admin123', ultimoAcceso: new Date('2026-06-15T08:00:00') },
+      { nombres: 'Juan', apellidos: 'Perez Lopez', dni: '45567012', email: 'estudiante@escolar.pe', username: 'estudiante', telefono: '987005005', rol: 'ESTUDIANTE', sede: 'Sede Central', estado: 'activo', cargo: 'Estudiante', password: 'admin123', ultimoAcceso: new Date('2026-06-15T08:00:00') },
       { nombres: 'Rosa', apellidos: 'Huanca Castro', dni: '45678123', email: 'r.huanca@escolar.pe', username: 'r.huanca', telefono: '987006006', rol: 'SECRETARIA', sede: 'Sede Central', estado: 'activo', cargo: 'Secretaria Academica', password: 'admin123', ultimoAcceso: new Date('2026-06-15T09:00:00') },
       { nombres: 'Pedro', apellidos: 'Vargas Condori', dni: '45789234', email: 'p.vargas@escolar.pe', username: 'p.vargas', telefono: '987007007', rol: 'TESORERO', sede: 'Sede Central', estado: 'activo', cargo: 'Tesorero', password: 'admin123', ultimoAcceso: new Date('2026-06-15T10:20:00') },
       { nombres: 'Elena', apellidos: 'Quispe Puma', dni: '45890346', email: 'e.quispe@escolar.pe', username: 'e.quispe', telefono: '987008008', rol: 'DOCENTE', sede: 'Sede Central', estado: 'activo', cargo: 'Docente de Ciencias', password: 'admin123', ultimoAcceso: new Date('2026-06-13T14:30:00') },
@@ -1160,10 +1456,12 @@ export class DatabaseSeedService implements OnModuleInit {
       { nombres: 'Graciela', apellidos: 'Apaza Condori', dni: '47012567', email: 'g.apaza@escolar.pe', username: 'g.apaza', telefono: '987020020', rol: 'DIRECTOR', sede: 'Sede Inicial', estado: 'activo', cargo: 'Directora Sede Inicial', password: 'admin123', ultimoAcceso: new Date('2026-06-15T07:40:00') },
     ];
 
+    const todosUsuarios = usuarios;
+
     const existentes = await repo.find({ select: { email: true, dni: true } });
     const emails = new Set(existentes.map((u) => u.email));
     const dnis = new Set(existentes.map((u) => u.dni));
-    const pendientes = usuarios.filter((u) => !emails.has(u.email) && !dnis.has(u.dni));
+    const pendientes = todosUsuarios.filter((u) => !emails.has(u.email) && !dnis.has(u.dni));
 
     for (const u of pendientes) {
       try {
@@ -1203,81 +1501,10 @@ export class DatabaseSeedService implements OnModuleInit {
   }
 
   private async seedEvents() {
-    const repo = this.dataSource.getRepository(SchoolEvent);
+    const repo = this.dataSource.getRepository(Evento);
     if (await repo.count()) return;
 
-    await repo.save([
-      {
-        titulo: 'Olimpiadas Escolares 2026',
-        descripcion: 'Competencias deportivas inter-aulas. Inscripciones en secretaría.',
-        tipo: 'deportivo',
-        fechaInicio: '2026-06-20',
-        fechaFin: '2026-06-20',
-        horaInicio: '08:00',
-        horaFin: '13:00',
-        lugar: 'Patio principal',
-        destinatarios: 'alumnos',
-        nivel: '',
-        responsable: 'Dept. Educación Física',
-        publicado: true,
-      },
-      {
-        titulo: 'Reunión de padres — 2° Bimestre',
-        descripcion: 'Entrega de informes y retroalimentación del bimestre.',
-        tipo: 'reunion',
-        fechaInicio: '2026-06-25',
-        fechaFin: '2026-06-25',
-        horaInicio: '18:00',
-        horaFin: '20:00',
-        lugar: 'Auditorio',
-        destinatarios: 'padres',
-        nivel: 'Primaria',
-        responsable: 'Dirección',
-        publicado: true,
-      },
-      {
-        titulo: 'Feria de Ciencias',
-        descripcion: 'Exposición de proyectos de investigación por grado.',
-        tipo: 'academico',
-        fechaInicio: '2026-07-05',
-        fechaFin: '2026-07-06',
-        horaInicio: '09:00',
-        horaFin: '14:00',
-        lugar: 'Pabellón de ciencias',
-        destinatarios: 'todos',
-        nivel: '',
-        responsable: 'Coord. Académica',
-        publicado: true,
-      },
-      {
-        titulo: 'Festival de Danzas Folclóricas',
-        descripcion: 'Presentación artística por niveles Inicial, Primaria y Secundaria.',
-        tipo: 'cultural',
-        fechaInicio: '2026-07-18',
-        fechaFin: '2026-07-18',
-        horaInicio: '10:00',
-        horaFin: '12:30',
-        lugar: 'Coliseo',
-        destinatarios: 'todos',
-        nivel: '',
-        responsable: 'Dept. Arte y Cultura',
-        publicado: true,
-      },
-      {
-        titulo: 'Capacitación docente — Evaluación por competencias',
-        descripcion: 'Taller interno para docentes de todos los niveles.',
-        tipo: 'reunion',
-        fechaInicio: '2026-06-10',
-        fechaFin: '2026-06-10',
-        horaInicio: '15:00',
-        horaFin: '17:00',
-        lugar: 'Sala de profesores',
-        destinatarios: 'docentes',
-        nivel: '',
-        responsable: 'UGEL / Dirección',
-        publicado: true,
-      },
-    ]);
+    await repo.save(MAESTRO_EVENTOS_SEED.map((e) => repo.create(e)));
   }
 
   private async seedResources() {
@@ -1384,28 +1611,154 @@ export class DatabaseSeedService implements OnModuleInit {
     ]);
   }
 
+  /** Matricula alumnos (`students`) y sincroniza filas en `tasks` desde `teacher_resources`. */
+  private async ensureEntregasDemoData(): Promise<void> {
+    const studentRepo = this.dataSource.getRepository(Student);
+    const taskRepo = this.dataSource.getRepository(Task);
+    const resourceRepo = this.dataSource.getRepository(TeacherResource);
+
+    const salon = ENTREGAS_DEMO_SALON;
+    const gradoNorm = normalizeGradoMatricula(salon.grado);
+    const seccionNorm = salon.seccion.trim().toUpperCase();
+
+    await this.ensureStudentsForAsistencia();
+
+    const demoEmails = ASISTENCIA_STUDENTS_SEED.filter(
+      (s) =>
+        s.nivel === salon.nivel &&
+        normalizeGradoMatricula(s.grado) === gradoNorm &&
+        s.seccion.trim().toUpperCase() === seccionNorm,
+    ).map((s) => s.email);
+
+    demoEmails.push('estudiante@escolar.pe');
+
+    const alumnosSalon = await studentRepo.find({
+      where: { email: In(demoEmails), activo: true },
+      order: { apellido: 'ASC', nombre: 'ASC' },
+    });
+
+    for (const student of alumnosSalon) {
+      let changed = false;
+      if (student.nivel !== salon.nivel) {
+        student.nivel = salon.nivel;
+        changed = true;
+      }
+      if (normalizeGradoMatricula(student.grado) !== gradoNorm) {
+        student.grado = gradoNorm;
+        changed = true;
+      }
+      if (student.seccion.trim().toUpperCase() !== seccionNorm) {
+        student.seccion = seccionNorm;
+        changed = true;
+      }
+      if (!student.activo) {
+        student.activo = true;
+        changed = true;
+      }
+      if (student.estadoMatricula !== 'activo') {
+        student.estadoMatricula = 'activo';
+        changed = true;
+      }
+      if (changed) await studentRepo.save(student);
+    }
+
+    const recursos = await resourceRepo.find({
+      where: { visible: true, nivel: salon.nivel },
+    });
+
+    const actividades = recursos.filter(
+      (r) =>
+        (r.tipo === 'tarea' || r.tipo === 'evaluacion') &&
+        r.fechaEntrega &&
+        normalizeGradoMatricula(r.grado) === gradoNorm &&
+        r.seccion.trim().toUpperCase() === seccionNorm,
+    );
+
+    let tareasCreadas = 0;
+    for (const resource of actividades) {
+      tareasCreadas += await this.tasksService.syncTasksForResource(resource.id);
+    }
+
+    if (tareasCreadas > 0) {
+      console.log(
+        `[seed entregas] ${alumnosSalon.length} alumno(s) en ${salon.nivel} ${gradoNorm} "${seccionNorm}" · ${tareasCreadas} tarea(s) en tabla tasks`,
+      );
+    }
+
+    await this.ensureEntregasDemoSubmissions(taskRepo, studentRepo);
+  }
+
+  /** Persiste entregas demo en tabla `tasks` (estado, archivo, comentario). */
+  private async ensureEntregasDemoSubmissions(
+    taskRepo: import('typeorm').Repository<Task>,
+    studentRepo: import('typeorm').Repository<Student>,
+  ): Promise<void> {
+    const hoy = new Date().toISOString().slice(0, 10);
+    let marcadas = 0;
+
+    for (const demo of ENTREGAS_DEMO_SUBMISSIONS) {
+      const student = await studentRepo.findOneBy({ email: demo.email });
+      if (!student) continue;
+
+      const task = await taskRepo.findOne({
+        where: { studentId: student.id, titulo: demo.titulo },
+      });
+      if (!task || task.estado === 'GRADED') continue;
+
+      const folder = join(
+        process.cwd(),
+        'uploads',
+        'task-submissions',
+        String(student.id),
+      );
+      mkdirSync(folder, { recursive: true });
+
+      const stored = `task-${task.id}-demo-${demo.fileName}`;
+      const absPath = join(folder, stored);
+      if (!absPath.startsWith(folder)) continue;
+
+      writeFileSync(absPath, buildDemoPdfBuffer(demo.label));
+
+      task.estado = 'SUBMITTED';
+      task.comentarioEntrega = demo.comentario;
+      task.archivoEntregaUrl = `/uploads/task-submissions/${student.id}/${stored}`;
+      task.archivoEntregaNombre = demo.fileName;
+      task.archivoEntregaMime = 'application/pdf';
+      task.fechaEntregaReal = hoy;
+      task.nota = null;
+      task.retroalimentacion = '';
+      task.calificadoAt = null;
+
+      await taskRepo.save(task);
+      marcadas++;
+    }
+
+    if (marcadas > 0) {
+      console.log(`[seed entregas] ${marcadas} entrega(s) demo marcada(s) como SUBMITTED`);
+    }
+  }
+
   private async seedParentStudents() {
     const repo = this.dataSource.getRepository(ParentStudent);
     if (await repo.count()) return;
 
     const studentRepo = this.dataSource.getRepository(Student);
-    const juan = await studentRepo.findOneBy({ email: 'estudiante@escolar.pe' });
-    const maria = await studentRepo.findOneBy({ email: 'm.quispe@estudiante.pe' });
+    const demoChildren = [
+      'estudiante@escolar.pe',
+      'l.torres@estudiante.pe',
+      'c.mendoza@estudiante.pe',
+    ];
 
     const links: Partial<ParentStudent>[] = [];
-    if (juan) {
-      links.push({
-        parentEmail: 'padre@escolar.pe',
-        studentId: juan.id,
-        parentesco: 'madre',
-      });
-    }
-    if (maria) {
-      links.push({
-        parentEmail: 'padre@escolar.pe',
-        studentId: maria.id,
-        parentesco: 'tutor',
-      });
+    for (const email of demoChildren) {
+      const student = await studentRepo.findOneBy({ email });
+      if (student) {
+        links.push({
+          parentEmail: 'padre@escolar.pe',
+          studentId: student.id,
+          parentesco: 'madre',
+        });
+      }
     }
 
     if (links.length) {
@@ -1413,219 +1766,71 @@ export class DatabaseSeedService implements OnModuleInit {
     }
   }
 
-  private async seedAuditLogs() {
-    const repo = this.dataSource.getRepository(AuditLog);
-    if (await repo.count()) return;
+  /** Sincroniza vínculos padre/alumno en `parent_students` desde BD (`students` + demo). */
+  private async ensureParentStudentLinks(): Promise<void> {
+    const repo = this.dataSource.getRepository(ParentStudent);
+    const studentRepo = this.dataSource.getRepository(Student);
 
-    const entries: Partial<AuditLog>[] = [
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'login',
-        modulo: 'autenticacion',
-        entidad: 'sesion',
-        entidadId: null,
-        descripcion: 'Inicio de sesión exitoso',
-        detalle: { navegador: 'Chrome 125', dispositivo: 'Windows' },
-        ip: '192.168.1.10',
-        nivel: 'info',
-        createdAt: new Date('2026-06-15T08:30:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'configurar',
-        modulo: 'institucion',
-        entidad: 'configuracion',
-        entidadId: '1',
-        descripcion: 'Actualizó datos generales de la institución',
-        detalle: { campos: ['director', 'anio', 'notaMinima'] },
-        ip: '192.168.1.10',
-        nivel: 'info',
-        createdAt: new Date('2026-06-15T09:12:00'),
-      },
-      {
-        usuarioId: 2,
-        usuarioNombre: 'Ana Garcia',
-        usuarioRol: 'SECRETARIA',
-        accion: 'crear',
-        modulo: 'matricula',
-        entidad: 'estudiante',
-        entidadId: '2026-045',
-        descripcion: 'Registró nueva matrícula: Sofia Ramos Cruz — 5° Primaria A',
-        detalle: { dni: '72345123', nivel: 'Primaria', grado: '5°' },
-        ip: '192.168.1.22',
-        nivel: 'info',
-        createdAt: new Date('2026-06-14T10:45:00'),
-      },
-      {
-        usuarioId: 3,
-        usuarioNombre: 'J. Pérez',
-        usuarioRol: 'DOCENTE',
-        accion: 'publicar',
-        modulo: 'recursos',
-        entidad: 'material',
-        entidadId: '12',
-        descripcion: 'Publicó tarea "Problemas con fracciones" en Matemática 5°A',
-        detalle: { tipo: 'tarea', fechaEntrega: '2026-06-24' },
-        ip: '10.0.0.55',
-        nivel: 'info',
-        createdAt: new Date('2026-06-14T15:20:00'),
-      },
-      {
-        usuarioId: 3,
-        usuarioNombre: 'J. Pérez',
-        usuarioRol: 'DOCENTE',
-        accion: 'actualizar',
-        modulo: 'asistencia',
-        entidad: 'asistencia',
-        entidadId: '2026-06-14',
-        descripcion: 'Registró asistencia del 14/06 — Matemática 5°A (28 presentes, 2 faltas)',
-        ip: '10.0.0.55',
-        nivel: 'info',
-        createdAt: new Date('2026-06-14T16:05:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'aprobar',
-        modulo: 'evaluacion',
-        entidad: 'acta',
-        entidadId: '3',
-        descripcion: 'Aprobó acta de evaluación — Matemática 5°A, 2° Bimestre',
-        ip: '192.168.1.10',
-        nivel: 'info',
-        createdAt: new Date('2026-06-13T11:30:00'),
-      },
-      {
-        usuarioId: 2,
-        usuarioNombre: 'Ana Garcia',
-        usuarioRol: 'SECRETARIA',
-        accion: 'crear',
-        modulo: 'comunicaciones',
-        entidad: 'comunicado',
-        entidadId: '8',
-        descripcion: 'Publicó comunicado "Calendario de evaluaciones — 2° Bimestre"',
-        detalle: { destinatarios: 'alumnos', prioridad: 'media' },
-        ip: '192.168.1.22',
-        nivel: 'info',
-        createdAt: new Date('2026-06-13T09:00:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'actualizar',
-        modulo: 'usuarios',
-        entidad: 'usuario',
-        entidadId: '15',
-        descripcion: 'Restableció contraseña del usuario docente.matematica',
-        ip: '192.168.1.10',
-        nivel: 'warning',
-        createdAt: new Date('2026-06-12T14:18:00'),
-      },
-      {
-        usuarioId: null,
-        usuarioNombre: 'Sistema',
-        usuarioRol: 'SISTEMA',
-        accion: 'consultar',
-        modulo: 'asistencia',
-        entidad: 'alerta',
-        entidadId: null,
-        descripcion: 'Generó 4 alertas de ausentismo crítico para Primaria 5°',
-        detalle: { alertas: 4, nivel: 'critico' },
-        ip: '',
-        nivel: 'warning',
-        createdAt: new Date('2026-06-12T07:00:00'),
-      },
-      {
-        usuarioId: 2,
-        usuarioNombre: 'Ana Garcia',
-        usuarioRol: 'SECRETARIA',
-        accion: 'eliminar',
-        modulo: 'matricula',
-        entidad: 'lista_espera',
-        entidadId: '7',
-        descripcion: 'Eliminó solicitud de lista de espera — DNI 72345682',
-        ip: '192.168.1.22',
-        nivel: 'warning',
-        createdAt: new Date('2026-06-11T16:40:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'exportar',
-        modulo: 'evaluacion',
-        entidad: 'promedios',
-        entidadId: null,
-        descripcion: 'Exportó reporte de promedios — Primaria 5°, 2° Bimestre',
-        detalle: { formato: 'PDF', registros: 32 },
-        ip: '192.168.1.10',
-        nivel: 'info',
-        createdAt: new Date('2026-06-11T10:15:00'),
-      },
-      {
-        usuarioId: 4,
-        usuarioNombre: 'Maria Lopez',
-        usuarioRol: 'PADRE',
-        accion: 'login',
-        modulo: 'autenticacion',
-        entidad: 'sesion',
-        entidadId: null,
-        descripcion: 'Inicio de sesión en portal de padres',
-        ip: '201.234.56.78',
-        nivel: 'info',
-        createdAt: new Date('2026-06-10T19:30:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'rechazar',
-        modulo: 'asistencia',
-        entidad: 'justificacion',
-        entidadId: '5',
-        descripcion: 'Rechazó justificación de falta — documento incompleto',
-        detalle: { estudiante: 'Carlos Mendoza Ruiz', fecha: '2026-06-08' },
-        ip: '192.168.1.10',
-        nivel: 'critical',
-        createdAt: new Date('2026-06-10T12:00:00'),
-      },
-      {
-        usuarioId: 3,
-        usuarioNombre: 'J. Pérez',
-        usuarioRol: 'DOCENTE',
-        accion: 'actualizar',
-        modulo: 'evaluacion',
-        entidad: 'nota',
-        entidadId: '156',
-        descripcion: 'Ingresó notas del examen bimestral — Matemática 5°A',
-        detalle: { alumnos: 30, bimestre: 2 },
-        ip: '10.0.0.55',
-        nivel: 'info',
-        createdAt: new Date('2026-06-09T17:45:00'),
-      },
-      {
-        usuarioId: 1,
-        usuarioNombre: 'Carlos Mendoza',
-        usuarioRol: 'ADMIN',
-        accion: 'logout',
-        modulo: 'autenticacion',
-        entidad: 'sesion',
-        entidadId: null,
-        descripcion: 'Cierre de sesión',
-        ip: '192.168.1.10',
-        nivel: 'info',
-        createdAt: new Date('2026-06-09T18:00:00'),
-      },
+    const demoParent = 'padre@escolar.pe';
+    const demoChildren = [
+      'estudiante@escolar.pe',
+      'l.torres@estudiante.pe',
+      'c.mendoza@estudiante.pe',
     ];
 
-    for (const entry of entries) {
-      await repo.save(repo.create(entry));
+    const demoChildIds = new Set<number>();
+    for (const childEmail of demoChildren) {
+      const student = await studentRepo.findOneBy({ email: childEmail });
+      if (student) {
+        demoChildIds.add(student.id);
+        await this.upsertParentStudentLink(
+          repo,
+          demoParent,
+          student.id,
+          'madre',
+        );
+      }
+    }
+
+    // Quitar vínculos demo incorrectos (p.ej. María Quispe Rojas, otra familia).
+    const stale = await repo.find({ where: { parentEmail: demoParent } });
+    for (const link of stale) {
+      if (!demoChildIds.has(link.studentId)) {
+        await repo.remove(link);
+      }
+    }
+
+    const students = await studentRepo.find({ where: { activo: true } });
+    for (const student of students) {
+      if (demoChildIds.has(student.id)) continue;
+      const apEmail = student.apoderado?.email?.trim().toLowerCase();
+      if (apEmail && apEmail !== demoParent) {
+        await this.upsertParentStudentLink(
+          repo,
+          apEmail,
+          student.id,
+          'apoderado',
+        );
+      }
+    }
+  }
+
+  private async upsertParentStudentLink(
+    repo: import('typeorm').Repository<ParentStudent>,
+    parentEmail: string,
+    studentId: number,
+    parentesco: string,
+  ): Promise<void> {
+    const email = parentEmail.trim().toLowerCase();
+    const existing = await repo.findOne({ where: { parentEmail: email, studentId } });
+    if (!existing) {
+      await repo.save(repo.create({ parentEmail: email, studentId, parentesco }));
+      return;
+    }
+    if (existing.parentesco !== parentesco) {
+      existing.parentesco = parentesco;
+      await repo.save(existing);
     }
   }
 }
+

@@ -12,6 +12,7 @@ import { StudentsService } from './students.service';
 import { MaestrosModule } from '../maestros/maestros.module';
 import { HorarioBlock } from '../horarios/entities/horario-block.entity';
 import { Docente } from '../maestros/docentes/entities/docente.entity';
+import { CurriculumArea } from '../curricula/entities/curriculum-area.entity';
 import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
 import { User } from '../users/entities/user.entity';
 
@@ -27,6 +28,7 @@ import { User } from '../users/entities/user.entity';
       Grade,
       HorarioBlock,
       Docente,
+      CurriculumArea,
       CurriculumSubject,
       User,
     ]),

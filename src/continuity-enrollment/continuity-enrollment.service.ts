@@ -28,6 +28,7 @@ import {
 import { splitGradoLabel } from '../students/students.mapper';
 import { SalonesService } from '../maestros/salones/salones.service';
 import { splitGradoLabel as splitTargetGrado } from '../maestros/salones/salones.util';
+import { GradingConfigService } from '../grading/grading-config.service';
 
 @Injectable()
 export class ContinuityEnrollmentService {
@@ -41,6 +42,7 @@ export class ContinuityEnrollmentService {
     @InjectRepository(Grade)
     private readonly gradeRepo: Repository<Grade>,
     private readonly salonesService: SalonesService,
+    private readonly gradingConfigService: GradingConfigService,
   ) {}
 
   async findCandidates(anioOrigen: number, anioNuevo: number) {
@@ -58,9 +60,11 @@ export class ContinuityEnrollmentService {
       students.map((s) => s.id),
     );
 
+    const notaMinima = this.gradingConfigService.getConfig().notaMinima;
+
     const candidates = students.map((student) => {
       const promedio = promedios.get(student.id) ?? 0;
-      const situacion = situacionFromPromedio(promedio);
+      const situacion = situacionFromPromedio(promedio, notaMinima);
       return toCandidateResponse(
         student,
         promedio,
@@ -147,7 +151,12 @@ export class ContinuityEnrollmentService {
       }
 
       const promedio = promedios.get(student.id) ?? 0;
-      const situacion = item.situacion ?? situacionFromPromedio(promedio);
+      const situacion =
+        item.situacion ??
+        situacionFromPromedio(
+          promedio,
+          this.gradingConfigService.getConfig().notaMinima,
+        );
       const gradoAnterior = gradoLabelFromStudent(student);
       const gradoNuevo = gradoSig(gradoAnterior, situacion);
       const seccionNueva =

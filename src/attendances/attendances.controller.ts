@@ -182,11 +182,13 @@ export class AttendancesController {
     @Query('studentId') studentId?: string,
     @Query('estado') estado?: string,
     @Query('mes') mes?: string,
+    @Query('anioEscolar') anioEscolar?: string,
   ) {
     return this.attendancesService.findAll({
       studentId: studentId ? +studentId : undefined,
       estado,
       mes,
+      anioEscolar: anioEscolar ? +anioEscolar : undefined,
     });
   }
 

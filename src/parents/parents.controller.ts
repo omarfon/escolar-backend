@@ -117,6 +117,27 @@ export class ParentsController {
     return this.parentsService.getAcademicTracking(+studentId, email);
   }
 
+  @Get('children/:studentId/tasks')
+  getTasks(
+    @Param('studentId') studentId: string,
+    @Query('email') email: string,
+  ) {
+    return this.parentsService.getTasksForChild(+studentId, email ?? '');
+  }
+
+  @Get('children/:studentId/clases')
+  getClases(
+    @Param('studentId') studentId: string,
+    @Query('email') email: string,
+    @Query('curso') curso?: string,
+    @Query('anioEscolar') anioEscolar?: string,
+  ) {
+    return this.parentsService.getClasesForChild(+studentId, email ?? '', {
+      curso: curso || undefined,
+      anioEscolar: anioEscolar ? +anioEscolar : undefined,
+    });
+  }
+
   @Get('children/:studentId/justifications/pending')
   getPendingJustifications(
     @Param('studentId') studentId: string,

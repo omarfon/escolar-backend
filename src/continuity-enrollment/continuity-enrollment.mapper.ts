@@ -50,8 +50,9 @@ export function seccionPropuesta(
 
 export function situacionFromPromedio(
   promedio: number,
+  notaMinima = 11,
 ): ContinuityEnrollment['situacion'] {
-  return promedio >= 11 ? 'promovido' : 'repitente';
+  return promedio >= notaMinima ? 'promovido' : 'repitente';
 }
 
 export interface ContinuityCandidateResponse {

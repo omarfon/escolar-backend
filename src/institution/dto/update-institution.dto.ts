@@ -8,12 +8,15 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   InstitutionModulo,
   InstitutionNivel,
   InstitutionPeriodo,
 } from '../entities/institution.entity';
+import { EscalaLogroDto } from './escala-logro.dto';
 
 export class UpdateInstitutionDto {
   @IsOptional() @IsString() @MaxLength(200) nombre?: string;
@@ -40,7 +43,8 @@ export class UpdateInstitutionDto {
   @IsOptional() @IsString() @MaxLength(4) anio?: string;
   @IsOptional() @IsIn(['numerico', 'literal', 'mixto']) sistemaEval?: string;
   @IsOptional() @IsIn(['bimestre', 'trimestre', 'semestre']) tipoPeriodo?: string;
-  @IsOptional() @IsInt() @Min(1) @Max(20) notaMinima?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20) notaMinima?: number;
+  @IsOptional() @ValidateNested() @Type(() => EscalaLogroDto) escalaLogro?: EscalaLogroDto;
   @IsOptional() @IsArray() niveles?: InstitutionNivel[];
   @IsOptional() @IsArray() periodos?: InstitutionPeriodo[];
   @IsOptional() @IsObject() config?: Record<string, string>;

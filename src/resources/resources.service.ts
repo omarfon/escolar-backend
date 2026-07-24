@@ -107,20 +107,22 @@ export class ResourcesService {
 
   async update(id: number, dto: UpdateResourceDto): Promise<ResourceResponse> {
     const current = await this.getOrFail(id);
-    Object.assign(current, {
-      ...dto,
-      titulo: dto.titulo !== undefined ? dto.titulo.trim() : current.titulo,
-      descripcion:
-        dto.descripcion !== undefined ? dto.descripcion.trim() : current.descripcion,
-      url: dto.url !== undefined ? dto.url.trim() : current.url,
-      nombreArchivo:
-        dto.nombreArchivo !== undefined ? dto.nombreArchivo.trim() : current.nombreArchivo,
-      mimeType: dto.mimeType !== undefined ? dto.mimeType.trim() : current.mimeType,
-      tamanoBytes:
-        dto.tamanoBytes !== undefined ? dto.tamanoBytes : current.tamanoBytes,
-      fechaEntrega:
-        dto.fechaEntrega !== undefined ? dto.fechaEntrega || null : current.fechaEntrega,
-    });
+    if (dto.titulo !== undefined) current.titulo = dto.titulo.trim();
+    if (dto.descripcion !== undefined) current.descripcion = dto.descripcion.trim();
+    if (dto.tipo !== undefined) current.tipo = dto.tipo as ResourceTipo;
+    if (dto.fechaPublicacion !== undefined) {
+      current.fechaPublicacion = dto.fechaPublicacion;
+    }
+    if (dto.fechaEntrega !== undefined) {
+      current.fechaEntrega = dto.fechaEntrega || null;
+    }
+    if (dto.url !== undefined) current.url = dto.url.trim();
+    if (dto.nombreArchivo !== undefined) {
+      current.nombreArchivo = dto.nombreArchivo.trim();
+    }
+    if (dto.mimeType !== undefined) current.mimeType = dto.mimeType.trim();
+    if (dto.tamanoBytes !== undefined) current.tamanoBytes = dto.tamanoBytes;
+    if (dto.visible !== undefined) current.visible = dto.visible;
 
     const saved = await this.resourcesRepo.save(current);
     const tareasGeneradas = await this.syncTasks(saved);

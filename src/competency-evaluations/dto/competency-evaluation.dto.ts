@@ -54,6 +54,10 @@ export class SaveCompetencyEvaluationsBulkDto {
   @IsInt()
   curriculumId?: number;
 
+  @IsOptional()
+  @IsInt()
+  cursoId?: number;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => SaveCompetencyEvaluationEntryDto)

@@ -21,6 +21,12 @@ export interface InstitutionConfig {
   formatoFecha: string;
 }
 
+export interface InstitutionEscalaLogro {
+  AD: number;
+  A: number;
+  B: number;
+}
+
 export interface InstitutionModulo {
   key: string;
   label: string;
@@ -108,6 +114,12 @@ export class Institution {
 
   @Column({ type: 'int', default: 11 })
   notaMinima: number;
+
+  @Column({
+    type: 'jsonb',
+    default: () => `'{"AD":17.5,"A":14,"B":11}'`,
+  })
+  escalaLogro: InstitutionEscalaLogro;
 
   @Column({ type: 'jsonb', default: [] })
   niveles: InstitutionNivel[];

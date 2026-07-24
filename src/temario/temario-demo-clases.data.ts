@@ -467,35 +467,76 @@ const CLASES_ADICIONALES: Array<{
 ];
 
 export const TOTAL_CLASES_DEMO = 15;
+export const TEMAS_POR_CLASE_DEMO = 2;
+
+function temaComplementario(
+  base: DemoClaseTemplate,
+  sessionNum: number,
+): DemoClaseTemplate {
+  return {
+    ...base,
+    numero: sessionNum,
+    titulo: `Consolidación: ${base.titulo}`,
+    descripcion: `Segunda parte de la sesión. ${base.descripcion}`,
+    objetivos: base.objetivos.replace(
+      'Al finalizar la clase',
+      'Al cerrar esta parte, el estudiante',
+    ),
+    contenidoClase: base.contenidoClase.replace(
+      'MOMENTO 2 — DESARROLLO',
+      'MOMENTO 2 — PROFUNDIZACIÓN',
+    ),
+    materialTitulo: base.materialTitulo
+      ? `Refuerzo — ${base.materialTitulo}`
+      : `Ficha de refuerzo — sesión ${sessionNum}`,
+    materialDescripcion:
+      base.materialDescripcion ||
+      `Material complementario de la sesión ${sessionNum}.`,
+  };
+}
 
 export function buildDemoClases(): DemoClaseTemplate[] {
   const fechas = fechasClasesTresPorSemana('2026-03-09', TOTAL_CLASES_DEMO);
 
-  const detalladas: DemoClaseTemplate[] = CLASES_DETALLADAS.map((c, i) => ({
+  const bases: DemoClaseTemplate[] = CLASES_DETALLADAS.map((c, i) => ({
     ...c,
+    numero: i + 1,
     fechaClase: fechas[i],
   }));
 
-  const adicionales: DemoClaseTemplate[] = CLASES_ADICIONALES.map((c, i) => {
+  for (let i = 0; i < CLASES_ADICIONALES.length; i++) {
     const numero = CLASES_DETALLADAS.length + i + 1;
+    const extra = CLASES_ADICIONALES[i];
     const base = claseGenerica(
       numero,
-      c.titulo,
-      c.descripcion,
-      c.objetivos,
-      c.desarrollo,
-      c.estado,
-      c.imagen,
+      extra.titulo,
+      extra.descripcion,
+      extra.objetivos,
+      extra.desarrollo,
+      extra.estado,
+      extra.imagen,
       undefined,
       'texto',
-      c.diasAntes ?? null,
+      extra.diasAntes ?? null,
     );
-    return {
+    bases.push({
       numero,
       fechaClase: fechas[CLASES_DETALLADAS.length + i],
       ...base,
-    };
-  });
+    });
+  }
 
-  return [...detalladas, ...adicionales];
+  const result: DemoClaseTemplate[] = [];
+  for (let i = 0; i < TOTAL_CLASES_DEMO; i++) {
+    const sessionNum = i + 1;
+    const fecha = fechas[i];
+    const principal = { ...bases[i], numero: sessionNum, fechaClase: fecha };
+    const complemento = {
+      ...temaComplementario(bases[i], sessionNum),
+      fechaClase: fecha,
+    };
+    result.push(principal, complemento);
+  }
+
+  return result;
 }

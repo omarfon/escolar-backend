@@ -44,14 +44,20 @@ import {
 } from './students.mapper';
 import { StudentMeProfile } from './dto/student-me.dto';
 import { StudentContactosResponse } from './dto/student-contactos.dto';
+import {
+  StudentGradeItemResponse,
+  StudentGradesResponse,
+} from './dto/student-grades.dto';
 import { listStudentsForAula } from './students-dedupe.util';
 import { HorarioBlock } from '../horarios/entities/horario-block.entity';
 import {
   abrevDocente,
   Docente,
 } from '../maestros/docentes/entities/docente.entity';
+import { CurriculumArea } from '../curricula/entities/curriculum-area.entity';
 import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
 import { User } from '../users/entities/user.entity';
+import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import {
   requisitosPorGrado,
   tiposEquivalentes,
@@ -89,11 +95,14 @@ export class StudentsService implements OnModuleInit {
     private readonly horarioBlockRepo: Repository<HorarioBlock>,
     @InjectRepository(Docente)
     private readonly docenteRepo: Repository<Docente>,
+    @InjectRepository(CurriculumArea)
+    private readonly curriculumAreaRepo: Repository<CurriculumArea>,
     @InjectRepository(CurriculumSubject)
     private readonly curriculumSubjectRepo: Repository<CurriculumSubject>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly salonesService: SalonesService,
+    private readonly periodosService: PeriodosAcademicosMaestrosService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -660,6 +669,125 @@ export class StudentsService implements OnModuleInit {
       },
       companeros,
       docentes,
+    };
+  }
+
+  async findAttendancesByLogin(
+    login: string,
+    anioEscolar?: number,
+  ): Promise<Attendance[]> {
+    const me = await this.findMeByLogin(login);
+    const anio = anioEscolar ?? new Date().getFullYear();
+
+    return this.attendanceRepo
+      .createQueryBuilder('a')
+      .where('a.studentId = :studentId', { studentId: me.id })
+      .andWhere('a.fecha >= :desde', { desde: `${anio}-01-01` })
+      .andWhere('a.fecha <= :hasta', { hasta: `${anio}-12-31` })
+      .orderBy('a.fecha', 'DESC')
+      .getMany();
+  }
+
+  async findGradesByLogin(
+    login: string,
+    anioEscolar?: number,
+  ): Promise<StudentGradesResponse> {
+    const me = await this.findMeByLogin(login);
+    const anio = anioEscolar ?? new Date().getFullYear();
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    const gradoNorm = normalizeGradoMatricula(me.grado);
+    const seccionNorm = me.seccion.trim().toUpperCase();
+
+    const blocksDb = await this.horarioBlockRepo.find({
+      where: { anioEscolar: anio, nivel: me.nivel, activo: true },
+    });
+    const blocks = blocksDb.filter(
+      (b) =>
+        normalizeGradoMatricula(b.grado) === gradoNorm &&
+        b.seccion.trim().toUpperCase() === seccionNorm,
+    );
+
+    const cursoIds = [...new Set(blocks.map((b) => b.cursoId))];
+    const docenteIds = [...new Set(blocks.map((b) => b.docenteId))];
+
+    const cursosDb =
+      cursoIds.length > 0
+        ? await this.curriculumSubjectRepo.find({
+            where: { id: In(cursoIds) },
+          })
+        : [];
+
+    const areaIds = [...new Set(cursosDb.map((c) => c.areaId))];
+    const areasDb =
+      areaIds.length > 0
+        ? await this.curriculumAreaRepo.find({ where: { id: In(areaIds) } })
+        : [];
+    const areaById = new Map(areasDb.map((a) => [a.id, a.nombre]));
+
+    const docentesDb =
+      docenteIds.length > 0
+        ? await this.docenteRepo.find({
+            where: { id: In(docenteIds), estado: 'activo' },
+          })
+        : [];
+    const docenteById = new Map(docentesDb.map((d) => [d.id, d]));
+
+    const docenteAbrevByCursoId = new Map<number, string>();
+    for (const block of blocks) {
+      if (docenteAbrevByCursoId.has(block.cursoId)) continue;
+      const docente = docenteById.get(block.docenteId);
+      docenteAbrevByCursoId.set(
+        block.cursoId,
+        docente?.abrev?.trim() ||
+          (docente
+            ? abrevDocente(docente.nombres, docente.apellidos)
+            : 'Docente'),
+      );
+    }
+
+    const gradesDb = await this.gradeRepo.find({
+      where: { studentId: me.id },
+      order: { fechaEvaluacion: 'DESC' },
+    });
+    const grades = gradesDb.filter((g) =>
+      g.fechaEvaluacion.startsWith(String(anio)),
+    );
+
+    const toItem = (g: Grade): StudentGradeItemResponse => ({
+      id: g.id,
+      descripcion: g.descripcion ?? g.tipo,
+      fecha: g.fechaEvaluacion.slice(0, 10),
+      bimestre: g.bimestre,
+      nota: g.nota,
+    });
+
+    const cursos = cursosDb
+      .map((curso) => {
+        const cursoGrades = grades.filter(
+          (g) =>
+            g.courseId === curso.id ||
+            (!g.courseId && g.curso === curso.nombre),
+        );
+        return {
+          id: curso.id,
+          nombre: curso.nombre,
+          area: areaById.get(curso.areaId) ?? 'Área curricular',
+          docenteAbrev: docenteAbrevByCursoId.get(curso.id) ?? 'Docente',
+          controlesDiarios: cursoGrades
+            .filter((g) => g.tipo === 'daily')
+            .map(toItem),
+          parciales: cursoGrades
+            .filter((g) => g.tipo === 'partial')
+            .map(toItem),
+          finales: cursoGrades.filter((g) => g.tipo === 'final').map(toItem),
+        };
+      })
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+
+    return {
+      bimestreActual,
+      anioEscolar: anio,
+      cursos,
     };
   }
 

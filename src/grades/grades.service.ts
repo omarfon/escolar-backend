@@ -8,6 +8,15 @@ import {
   calcNotaPonderada,
   nivelFromNota,
 } from '../maestros/formulas-evaluacion/evaluation-formula.util';
+import { GradingConfigService } from '../grading/grading-config.service';
+import { PromediosService } from '../promedios/promedios.service';
+import type { PromediosResponse } from '../promedios/promedios.types';
+export type {
+  AlumnoPromedio,
+  CursoPromedio,
+  PromediosResumen,
+  PromediosResponse,
+} from '../promedios/promedios.types';
 import { StudentsService } from '../students/students.service';
 import {
   dedupeStudentsByPerson,
@@ -26,43 +35,6 @@ import {
   registroNotasFechaEvaluacion,
   registroNotasOmitirComponente,
 } from './registro-notas-seed.data';
-
-export interface CursoPromedio {
-  curso: string;
-  b1: number | null;
-  b2: number | null;
-  b3: number | null;
-  b4: number | null;
-  promedioAnual: number | null;
-  nivel: string | null;
-}
-
-export interface AlumnoPromedio {
-  studentId: number;
-  estudiante: string;
-  nivel: string;
-  grado: string;
-  seccion: string;
-  cursos: CursoPromedio[];
-  promedioGeneral: number | null;
-  nivelGeneral: string | null;
-}
-
-export interface PromediosResumen {
-  totalAlumnos: number;
-  promedioAula: number | null;
-  aprobados: number;
-  desaprobados: number;
-  enRiesgo: number;
-  destacados: number;
-}
-
-export interface PromediosResponse {
-  resumen: PromediosResumen;
-  alumnos: AlumnoPromedio[];
-  cursosDisponibles: string[];
-  bimestreActual: number;
-}
 
 export interface RegistryComponenteNota {
   gradeId?: number;
@@ -121,6 +93,8 @@ export class GradesService {
     private readonly formulasService: FormulasEvaluacionMaestrosService,
     private readonly cursosMaestrosService: CursosMaestrosService,
     private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly gradingConfigService: GradingConfigService,
+    private readonly promediosService: PromediosService,
   ) {}
 
   create(createGradeDto: CreateGradeDto) {
@@ -403,15 +377,19 @@ export class GradesService {
       saved++;
     }
 
+    const registry = await this.getRegistry({
+      nivel: dto.nivel ?? '',
+      grado: dto.grado ?? '',
+      seccion: dto.seccion ?? '',
+      curso: dto.curso,
+      bimestre: dto.bimestre,
+    });
+
+    await this.promediosService.syncRegistryPromedios(registry);
+
     return {
       saved,
-      registry: await this.getRegistry({
-        nivel: dto.nivel ?? '',
-        grado: dto.grado ?? '',
-        seccion: dto.seccion ?? '',
-        curso: dto.curso,
-        bimestre: dto.bimestre,
-      }),
+      registry,
     };
   }
 
@@ -422,171 +400,11 @@ export class GradesService {
     curso?: string;
     busqueda?: string;
   }): Promise<PromediosResponse> {
-    const bimestreActual = await this.periodosService.resolveBimestreActual();
-    const students = await this.studentsService.findAll();
-    let filtered = students.filter(isStudentMatriculaActiva);
+    return this.promediosService.getAverages(query);
+  }
 
-    if (query?.nivel) filtered = filtered.filter((s) => s.nivel === query.nivel);
-    if (query?.grado) filtered = filtered.filter((s) => s.grado === query.grado);
-    if (query?.seccion) {
-      filtered = filtered.filter((s) =>
-        matchesStudentSection(s, query.seccion!),
-      );
-    }
-    filtered = dedupeStudentsByPerson(filtered);
-
-    if (query?.busqueda?.trim()) {
-      const q = query.busqueda.trim().toLowerCase();
-      filtered = filtered.filter((s) =>
-        `${s.apellido} ${s.nombre} ${s.grado}`.toLowerCase().includes(q),
-      );
-    }
-
-    const allGrades = await this.gradesRepository.find();
-    const formulaCache = new Map<string, Awaited<ReturnType<FormulasEvaluacionMaestrosService['resolve']>>>();
-    const cursosSet = new Set<string>();
-    const alumnos: AlumnoPromedio[] = [];
-
-    const resolveFormula = async (
-      nivel: string,
-      grado: string,
-      curso: string,
-      bimestre: number,
-    ) => {
-      const key = `${nivel}|${grado}|${curso}|${bimestre}`;
-      if (!formulaCache.has(key)) {
-        formulaCache.set(
-          key,
-          await this.formulasService.resolve({ nivel, grado, curso, bimestre }),
-        );
-      }
-      return formulaCache.get(key)!;
-    };
-
-    const calcBimestrePonderado = async (
-      student: (typeof filtered)[number],
-      curso: string,
-      bimestre: number,
-    ): Promise<number | null> => {
-      if (bimestre > bimestreActual) return null;
-      const formula = await resolveFormula(
-        student.nivel,
-        student.grado,
-        curso,
-        bimestre,
-      );
-      const studentGrades = allGrades.filter(
-        (g) =>
-          g.studentId === student.id &&
-          g.curso === curso &&
-          g.bimestre === bimestre,
-      );
-      const notasCalc: Record<string, number | null> = {};
-      for (const comp of formula.componentes) {
-        const match = studentGrades.find(
-          (g) =>
-            g.componenteCodigo === comp.codigo ||
-            (!g.componenteCodigo &&
-              g.tipo === mapTipoFromCodigo(comp.codigo)),
-        );
-        notasCalc[comp.codigo] = match?.nota ?? null;
-      }
-      return calcNotaPonderada(formula.componentes, notasCalc);
-    };
-
-    for (const student of filtered) {
-      const studentGrades = allGrades.filter((g) => g.studentId === student.id);
-      const byCurso = new Map<string, Grade[]>();
-
-      for (const grade of studentGrades) {
-        cursosSet.add(grade.curso);
-        const list = byCurso.get(grade.curso) ?? [];
-        list.push(grade);
-        byCurso.set(grade.curso, list);
-      }
-
-      let cursosToProcess = [...byCurso.keys()];
-      if (query?.curso) {
-        cursosToProcess = cursosToProcess.filter((c) => c === query.curso);
-      }
-
-      const cursos: CursoPromedio[] = [];
-      for (const curso of cursosToProcess) {
-        const b1 = await calcBimestrePonderado(student, curso, 1);
-        const b2 = await calcBimestrePonderado(student, curso, 2);
-        const b3 = await calcBimestrePonderado(student, curso, 3);
-        const b4 = await calcBimestrePonderado(student, curso, 4);
-        const bimAvgs = [b1, b2, b3, b4]
-          .slice(0, bimestreActual)
-          .filter((v): v is number => v !== null);
-        const promedioAnual = avgNumbers(bimAvgs);
-        const formula = await resolveFormula(
-          student.nivel,
-          student.grado,
-          curso,
-          bimestreActual,
-        );
-        cursos.push({
-          curso,
-          b1,
-          b2,
-          b3,
-          b4,
-          promedioAnual,
-          nivel:
-            promedioAnual !== null
-              ? nivelFromNota(promedioAnual, formula.escalaLogro)
-              : null,
-        });
-      }
-
-      const courseAvgs = cursos
-        .map((c) => c.promedioAnual)
-        .filter((v): v is number => v !== null);
-      const promedioGeneral = avgNumbers(courseAvgs);
-
-      if (query?.curso && cursos.length === 0) continue;
-
-      alumnos.push({
-        studentId: student.id,
-        estudiante: `${student.apellido}, ${student.nombre}`,
-        nivel: student.nivel,
-        grado: student.grado,
-        seccion: student.seccion.trim().toUpperCase(),
-        cursos,
-        promedioGeneral,
-        nivelGeneral:
-          promedioGeneral !== null ? nivelFromNotaLocal(promedioGeneral) : null,
-      });
-    }
-
-    alumnos.sort((a, b) =>
-      (b.promedioGeneral ?? 0) - (a.promedioGeneral ?? 0),
-    );
-
-    const promediosGenerales = alumnos
-      .map((a) => a.promedioGeneral)
-      .filter((v): v is number => v !== null);
-
-    const resumen: PromediosResumen = {
-      totalAlumnos: alumnos.length,
-      promedioAula: avgNumbers(promediosGenerales),
-      aprobados: alumnos.filter((a) => (a.promedioGeneral ?? 0) >= 11).length,
-      desaprobados: alumnos.filter(
-        (a) => a.promedioGeneral !== null && a.promedioGeneral < 11,
-      ).length,
-      enRiesgo: alumnos.filter(
-        (a) => a.promedioGeneral !== null && a.promedioGeneral < 11,
-      ).length,
-      destacados: alumnos.filter(
-        (a) => a.promedioGeneral !== null && a.promedioGeneral >= 17.5,
-      ).length,
-    };
-
-    let cursosDisponibles = [...cursosSet].sort();
-    if (query?.curso) cursosDisponibles = [query.curso];
-
-    return { resumen, alumnos, cursosDisponibles, bimestreActual };
+  getGradingConfig() {
+    return this.gradingConfigService.getConfig();
   }
 
   private async getOrFail(id: number): Promise<Grade> {
@@ -675,19 +493,6 @@ export class GradesService {
       await this.gradesRepository.save(row);
     }
   }
-}
-
-function avgNumbers(values: number[]): number | null {
-  if (!values.length) return null;
-  const sum = values.reduce((s, v) => s + v, 0);
-  return Math.round((sum / values.length) * 10) / 10;
-}
-
-function nivelFromNotaLocal(nota: number): string {
-  if (nota >= 17.5) return 'AD';
-  if (nota >= 14) return 'A';
-  if (nota >= 11) return 'B';
-  return 'C';
 }
 
 function mapTipoFromCodigo(codigo: string): Grade['tipo'] {

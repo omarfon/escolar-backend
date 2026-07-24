@@ -143,6 +143,30 @@ export class StudentsController {
     return this.studentsService.findContactosByLogin(login, anio);
   }
 
+  @Get('me/attendance')
+  @RequirePermiso()
+  @RequireRole('ESTUDIANTE', 'ADMIN')
+  findMeAttendance(
+    @Req() req: AuthRequest,
+    @Query('anioEscolar') anioEscolar?: string,
+  ) {
+    const login = req.user?.username ?? '';
+    const anio = anioEscolar ? Number(anioEscolar) : undefined;
+    return this.studentsService.findAttendancesByLogin(login, anio);
+  }
+
+  @Get('me/grades')
+  @RequirePermiso()
+  @RequireRole('ESTUDIANTE', 'ADMIN')
+  findMeGrades(
+    @Req() req: AuthRequest,
+    @Query('anioEscolar') anioEscolar?: string,
+  ) {
+    const login = req.user?.username ?? '';
+    const anio = anioEscolar ? Number(anioEscolar) : undefined;
+    return this.studentsService.findGradesByLogin(login, anio);
+  }
+
   @Get()
   findAll(@Query('q') q?: string) {
     return this.studentsService.findAllExpedientes(q);

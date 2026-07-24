@@ -222,6 +222,7 @@ export class TemarioService {
               seccion,
               anioEscolar,
               fechaClase: sample.fechaClase,
+              titulo: sample.titulo,
             },
           });
           if (exists) continue;
@@ -404,7 +405,7 @@ export class TemarioService {
     }
 
     const rows = await qb.getMany();
-    return this.dedupeTemarioClasesPorDia(rows).map((r) => this.toResponse(r));
+    return this.dedupeTemarioFilasExactas(rows).map((r) => this.toResponse(r));
   }
 
   async findForEstudiante(
@@ -418,6 +419,32 @@ export class TemarioService {
     },
   ): Promise<TemarioClaseResponse[]> {
     const aula = await this.resolveEstudianteAula(userId, query);
+    return this.findForEstudianteAula(aula, query);
+  }
+
+  async findForStudentId(
+    studentId: number,
+    query: { curso?: string; anioEscolar?: number },
+  ): Promise<TemarioClaseResponse[]> {
+    const student = await this.studentRepo.findOneBy({ id: studentId });
+    if (!student || !student.activo) {
+      throw new NotFoundException(`Estudiante ${studentId} no encontrado`);
+    }
+
+    return this.findForEstudianteAula(
+      {
+        nivel: student.nivel,
+        grado: normalizeGradoMatricula(student.grado),
+        seccion: student.seccion.trim().toUpperCase(),
+      },
+      query,
+    );
+  }
+
+  private async findForEstudianteAula(
+    aula: { nivel: string; grado: string; seccion: string },
+    query: { curso?: string; anioEscolar?: number },
+  ): Promise<TemarioClaseResponse[]> {
     const anio = query.anioEscolar ?? new Date().getFullYear();
 
     const qb = this.temarioRepo
@@ -442,15 +469,18 @@ export class TemarioService {
 
     const rows = await qb.getMany();
     const liberados = rows.filter((r) => this.isLiberadoAlumno(r));
-    const unicos = this.dedupeTemarioClasesPorDia(liberados);
+    const unicos = this.dedupeTemarioFilasExactas(liberados, true);
     return unicos.map((r) => this.toResponse(r));
   }
 
-  /** Una sola clase por curso, aula y día. */
-  private dedupeTemarioClasesPorDia(rows: TemarioClase[]): TemarioClase[] {
+  /** Elimina filas duplicadas exactas; conserva hasta 2 temas distintos por sesión. */
+  private dedupeTemarioFilasExactas(
+    rows: TemarioClase[],
+    porNombreCurso = false,
+  ): TemarioClase[] {
     const best = new Map<string, TemarioClase>();
     for (const row of rows) {
-      const key = this.temarioDiaKey(row);
+      const key = this.temarioFilaKey(row, porNombreCurso);
       const current = best.get(key);
       if (!current || this.temarioRowScore(row) > this.temarioRowScore(current)) {
         best.set(key, row);
@@ -458,12 +488,17 @@ export class TemarioService {
     }
     return [...best.values()].sort(
       (a, b) =>
-        a.fechaClase.localeCompare(b.fechaClase) || a.numero - b.numero,
+        a.fechaClase.localeCompare(b.fechaClase) ||
+        a.numero - b.numero ||
+        a.titulo.localeCompare(b.titulo, 'es'),
     );
   }
 
-  private temarioDiaKey(row: TemarioClase): string {
-    return `${row.docenteId}|${row.cursoId}|${row.nivel}|${row.grado}|${row.seccion.trim().toUpperCase()}|${row.fechaClase.slice(0, 10)}`;
+  private temarioFilaKey(row: TemarioClase, porNombreCurso = false): string {
+    const cursoKey = porNombreCurso
+      ? row.cursoNombre.trim().toLowerCase()
+      : String(row.cursoId);
+    return `${row.docenteId}|${cursoKey}|${row.nivel}|${row.grado}|${row.seccion.trim().toUpperCase()}|${row.fechaClase.slice(0, 10)}|${row.titulo.trim().toLowerCase()}`;
   }
 
   private temarioRowScore(row: TemarioClase): number {
@@ -483,7 +518,7 @@ export class TemarioService {
     });
     if (rows.length < 2) return;
 
-    const keep = new Set(this.dedupeTemarioClasesPorDia(rows).map((r) => r.id));
+    const keep = new Set(this.dedupeTemarioFilasExactas(rows).map((r) => r.id));
     const toRemove = rows.filter((r) => !keep.has(r.id));
     if (toRemove.length) {
       await this.temarioRepo.remove(toRemove);
@@ -496,7 +531,7 @@ export class TemarioService {
   ): Promise<TemarioClaseResponse> {
     const docente = await this.getDocenteByUserId(userId);
     await this.assertDocentePuedeGestionar(docente.id, dto);
-    await this.assertUnicaClasePorDia(docente.id, dto, null);
+    await this.assertLimiteTemasPorDia(docente.id, dto, null);
 
     const lib = this.resolveLiberacion({
       modoLiberacion: dto.modoLiberacion,
@@ -568,8 +603,8 @@ export class TemarioService {
     if (dto.fechaClase !== undefined) current.fechaClase = dto.fechaClase;
     if (dto.estado !== undefined) current.estado = dto.estado;
 
-    if (dto.fechaClase !== undefined) {
-      await this.assertUnicaClasePorDia(
+    if (dto.fechaClase !== undefined || dto.titulo !== undefined) {
+      await this.assertLimiteTemasPorDia(
         docente.id,
         {
           cursoId: current.cursoId,
@@ -577,7 +612,8 @@ export class TemarioService {
           grado: current.grado,
           seccion: current.seccion,
           anioEscolar: current.anioEscolar,
-          fechaClase: dto.fechaClase,
+          fechaClase: dto.fechaClase ?? current.fechaClase,
+          titulo: dto.titulo ?? current.titulo,
         },
         current.id,
       );
@@ -871,7 +907,7 @@ export class TemarioService {
     return `${this.formatFecha(fecha)} · ${this.normalizeHora(hora)}`;
   }
 
-  private async assertUnicaClasePorDia(
+  private async assertLimiteTemasPorDia(
     docenteId: number,
     ctx: {
       cursoId: number;
@@ -880,23 +916,37 @@ export class TemarioService {
       seccion: string;
       anioEscolar: number;
       fechaClase: string;
+      titulo?: string;
     },
     excludeId: number | null,
   ): Promise<void> {
-    const existing = await this.temarioRepo.findOne({
+    const fecha = ctx.fechaClase.slice(0, 10);
+    const grado = normalizeGradoMatricula(ctx.grado);
+    const seccion = ctx.seccion.trim().toUpperCase();
+    const existing = await this.temarioRepo.find({
       where: {
         docenteId,
         cursoId: ctx.cursoId,
         nivel: ctx.nivel.trim(),
-        grado: normalizeGradoMatricula(ctx.grado),
-        seccion: ctx.seccion.trim().toUpperCase(),
+        grado,
+        seccion,
         anioEscolar: ctx.anioEscolar,
-        fechaClase: ctx.fechaClase.slice(0, 10),
+        fechaClase: fecha,
       },
     });
-    if (existing && existing.id !== excludeId) {
+    const others = existing.filter((row) => row.id !== excludeId);
+    if (others.length >= 2) {
       throw new ConflictException(
-        'Ya existe una clase registrada para este curso en la fecha indicada',
+        'Ya hay 2 temas registrados para este curso en la fecha indicada',
+      );
+    }
+    const titulo = ctx.titulo?.trim().toLowerCase();
+    if (
+      titulo &&
+      others.some((row) => row.titulo.trim().toLowerCase() === titulo)
+    ) {
+      throw new ConflictException(
+        'Ya existe un tema con el mismo título en esta fecha',
       );
     }
   }

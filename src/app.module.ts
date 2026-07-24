@@ -35,6 +35,8 @@ import { CompetencyEvaluationsModule } from './competency-evaluations/competency
 import { ReportCardsModule } from './report-cards/report-cards.module';
 import { TemarioModule } from './temario/temario.module';
 import { TreasuryModule } from './treasury/treasury.module';
+import { GradingModule } from './grading/grading.module';
+import { PromediosModule } from './promedios/promedios.module';
 import { DatabaseSeedService } from './database/database-seed.service';
 
 @Module({
@@ -99,6 +101,8 @@ import { DatabaseSeedService } from './database/database-seed.service';
     ReportCardsModule,
     TemarioModule,
     TreasuryModule,
+    GradingModule,
+    PromediosModule,
   ],
   controllers: [AppController],
   providers: [AppService, DatabaseSeedService],

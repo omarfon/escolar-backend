@@ -8,6 +8,7 @@ import { StudentAcademicHistory } from '../students/entities/student-academic-hi
 import { Grade } from '../grades/entities/grade.entity';
 import { AuthModule } from '../auth/auth.module';
 import { MaestrosModule } from '../maestros/maestros.module';
+import { GradingModule } from '../grading/grading.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { MaestrosModule } from '../maestros/maestros.module';
     ]),
     AuthModule,
     MaestrosModule,
+    GradingModule,
   ],
   controllers: [ContinuityEnrollmentController],
   providers: [ContinuityEnrollmentService],

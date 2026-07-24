@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Sede } from './entities/sede.entity';
@@ -21,6 +21,7 @@ import {
   CreateGradeSectionDto,
   UpdateGradeSectionDto,
 } from './dto/grade-section.dto';
+import { GradingConfigService } from '../grading/grading-config.service';
 
 interface NivelEstructura {
   nombre: string;
@@ -89,6 +90,8 @@ export class InstitutionService {
     private readonly gradoRepo: Repository<GradeLevel>,
     @InjectRepository(GradeSection)
     private readonly seccionRepo: Repository<GradeSection>,
+    @Inject(forwardRef(() => GradingConfigService))
+    private readonly gradingConfigService: GradingConfigService,
   ) {}
 
   async getConfig() {
@@ -105,7 +108,9 @@ export class InstitutionService {
     const current = await this.ensureInstitution();
     const { niveles: _niveles, ...rest } = dto;
     const merged = this.institutionRepo.merge(current, rest);
-    return this.institutionRepo.save(merged);
+    const saved = await this.institutionRepo.save(merged);
+    await this.gradingConfigService.refresh();
+    return saved;
   }
 
   findAllCampuses() {

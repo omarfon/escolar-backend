@@ -39,6 +39,10 @@ import {
   ASISTENCIA_STUDENTS_SEED,
 } from './asistencia-seed.data';
 import {
+  DEMO_LOGIN_STUDENT_EMAIL,
+  DEMO_STUDENT_ATTENDANCES_2026,
+} from './demo-login-student-seed.data';
+import {
   STUDENT_HISTORIAL_SEED,
   STUDENT_PROFILE_SEED,
 } from './student-profile-seed.data';
@@ -84,6 +88,8 @@ export class DatabaseSeedService {
   /** Carga datos demo en PostgreSQL. Ejecutar con: npm run db:seed */
   async runSeed(): Promise<void> {
     await this.seedStudents();
+    await this.ensureDemoLoginStudent();
+    await this.ensureDemoStudentAttendances();
     await this.seedExpedientes();
     await this.ensureStudentsForAsistencia();
     await this.ensureStudentRepresentatives();
@@ -124,6 +130,17 @@ export class DatabaseSeedService {
     await this.ensureStudentRepresentatives();
     await this.seedResources();
     await this.ensureEntregasDemoData();
+    await this.ensureParentStudentLinks();
+  }
+
+  /** Alumno demo del botón "Soy alumno" (login: estudiante / admin123). */
+  async seedDemoLoginStudent(): Promise<void> {
+    await this.ensureDemoLoginStudent();
+    await this.ensureDemoStudentAttendances();
+    await this.ensureStudentProfiles();
+    await this.ensureStudentAcademicHistory();
+    await this.ensureStudentDocuments();
+    await this.ensureDemoParentFamily();
     await this.ensureParentStudentLinks();
   }
 
@@ -326,56 +343,157 @@ export class DatabaseSeedService {
   private async seedStudents() {
     const repo = this.dataSource.getRepository(Student);
     if (await repo.count()) {
-      const existing = await repo.findOneBy({ email: 'estudiante@escolar.pe' });
-      if (existing) this.studentId = existing.id;
+      await this.ensureDemoLoginStudent();
       await this.seedDemoStudents(repo);
       return;
     }
-    const saved = await repo.save({
-      nombre: 'Juan',
-      apellido: 'Perez Lopez',
-      email: 'estudiante@escolar.pe',
-      nivel: 'Primaria',
-      grado: '5°',
-      seccion: 'A',
-      activo: true,
-      codigo: '2026-001',
-      dni: '71234567',
-      fechaNac: '2012-05-14',
-      sexo: 'M',
-      direccion: 'Av. Los Heroes 234, SJM',
-      grupoSanguineo: 'O+',
-      alergias: 'Ninguna',
-      anioIngreso: '2018',
-      estadoMatricula: 'activo',
-      conductaNota: 'A',
-      padre: {
-        nombres: 'Carlos',
-        apellidos: 'Perez Mamani',
-        dni: '40123456',
-        telefono: '987001001',
-        email: 'cperez@gmail.com',
-        trabajo: 'Ingeniero Civil',
-      },
-      madre: {
-        nombres: 'Maria',
-        apellidos: 'Lopez Quispe',
-        dni: '46678123',
-        telefono: '987016016',
-        email: 'padre@escolar.pe',
-        trabajo: 'Apoderada',
-      },
-      apoderado: {
-        nombres: 'Maria',
-        apellidos: 'Lopez Quispe',
-        dni: '46678123',
-        telefono: '987016016',
-        email: 'padre@escolar.pe',
-        trabajo: 'Apoderada',
-      },
-    });
-    this.studentId = saved.id;
+    await this.ensureDemoLoginStudent();
     await this.seedDemoStudents(repo);
+  }
+
+  /**
+   * Garantiza el registro académico del usuario demo `estudiante@escolar.pe`
+   * (login username: estudiante).
+   */
+  private async ensureDemoLoginStudent(): Promise<Student> {
+    const repo = this.dataSource.getRepository(Student);
+    const email = DEMO_LOGIN_STUDENT_EMAIL;
+    const padre = this.rep(
+      'Carlos',
+      'Perez Mamani',
+      '40123456',
+      '987001001',
+      'cperez@gmail.com',
+      'Ingeniero Civil',
+    );
+    const madre = this.rep(
+      'Maria',
+      'Lopez Quispe',
+      '46678123',
+      '987016016',
+      'padre@escolar.pe',
+      'Apoderada',
+    );
+
+    let student = await repo.findOneBy({ email });
+    if (!student) {
+      student = await repo.save(
+        repo.create({
+          nombre: 'Juan',
+          apellido: 'Perez Lopez',
+          email,
+          nivel: 'Primaria',
+          grado: '5°',
+          seccion: 'A',
+          activo: true,
+          codigo: '2026-001',
+          dni: '71234567',
+          fechaNac: '2012-05-14',
+          sexo: 'M',
+          direccion: 'Av. Los Heroes 234, SJM',
+          grupoSanguineo: 'O+',
+          alergias: 'Ninguna',
+          anioIngreso: '2018',
+          estadoMatricula: 'activo',
+          conductaNota: 'A',
+          padre,
+          madre,
+          apoderado: { ...madre },
+        }),
+      );
+      console.log(`[seed] Alumno demo creado: ${email} (id ${student.id})`);
+    } else {
+      let changed = false;
+      if (student.nombre !== 'Juan') {
+        student.nombre = 'Juan';
+        changed = true;
+      }
+      if (student.apellido !== 'Perez Lopez') {
+        student.apellido = 'Perez Lopez';
+        changed = true;
+      }
+      if (student.nivel !== 'Primaria') {
+        student.nivel = 'Primaria';
+        changed = true;
+      }
+      if (student.grado !== '5°') {
+        student.grado = '5°';
+        changed = true;
+      }
+      if (student.seccion !== 'A') {
+        student.seccion = 'A';
+        changed = true;
+      }
+      if (!student.activo) {
+        student.activo = true;
+        changed = true;
+      }
+      if (student.estadoMatricula !== 'activo') {
+        student.estadoMatricula = 'activo';
+        changed = true;
+      }
+      if (!student.dni) {
+        student.dni = '71234567';
+        changed = true;
+      }
+      if (!student.codigo) {
+        student.codigo = '2026-001';
+        changed = true;
+      }
+      if (changed) {
+        student = await repo.save(student);
+        console.log(`[seed] Alumno demo actualizado: ${email} (id ${student.id})`);
+      }
+    }
+
+    this.studentId = student.id;
+    return student;
+  }
+
+  /** Asistencias del año actual en tabla attendances para el alumno demo. */
+  private async ensureDemoStudentAttendances(): Promise<void> {
+    const student = await this.ensureDemoLoginStudent();
+    const repo = this.dataSource.getRepository(Attendance);
+    const anio = new Date().getFullYear();
+    const desde = `${anio}-01-01`;
+    const hasta = `${anio}-12-31`;
+
+    const existentes = await repo
+      .createQueryBuilder('a')
+      .where('a.studentId = :studentId', { studentId: student.id })
+      .andWhere('a.fecha >= :desde', { desde })
+      .andWhere('a.fecha <= :hasta', { hasta })
+      .getMany();
+
+    const fechasExistentes = new Set(existentes.map((r) => r.fecha.slice(0, 10)));
+
+    const rows =
+      anio === 2026
+        ? DEMO_STUDENT_ATTENDANCES_2026
+        : DEMO_STUDENT_ATTENDANCES_2026.map((row) => ({
+            ...row,
+            fecha: row.fecha.replace(/^2026/, String(anio)),
+          }));
+
+    const pendientes = rows.filter((row) => !fechasExistentes.has(row.fecha));
+    if (!pendientes.length) {
+      return;
+    }
+
+    await repo.save(
+      pendientes.map((row) =>
+        repo.create({
+          studentId: student.id,
+          fecha: row.fecha,
+          estado: row.estado,
+          observacion: row.observacion,
+        }),
+      ),
+    );
+
+    console.log(
+      `[seed] ${pendientes.length} asistencia(s) ${anio} cargadas para ${DEMO_LOGIN_STUDENT_EMAIL}`,
+    );
   }
 
   private async seedDemoStudents(repo: import('typeorm').Repository<Student>) {

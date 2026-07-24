@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -7,6 +8,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { CurriculaService } from '../curricula/curricula.service';
 import { Curriculum } from '../curricula/entities/curriculum.entity';
+import { CurriculumTeacherAssignment } from '../curricula/entities/curriculum-teacher-assignment.entity';
+import { Docente } from '../maestros/docentes/entities/docente.entity';
+import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
+import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
+import { RequestUser } from '../auth/interfaces/request-user.interface';
 import { StudentsService } from '../students/students.service';
 import { SaveCompetencyEvaluationsBulkDto } from './dto/competency-evaluation.dto';
 import {
@@ -58,6 +64,10 @@ export interface CompetencyMatrixResponse {
     'id' | 'anio' | 'nivel' | 'tipoEscala' | 'tipoPeriodo'
   >;
   bimestre: number;
+  bimestreActual: number;
+  bimestreHabilitado: boolean;
+  cursoId?: number;
+  cursoNombre?: string;
   nivel: string;
   grado: string;
   seccion: string;
@@ -87,19 +97,49 @@ export class CompetencyEvaluationsService {
   constructor(
     @InjectRepository(CompetencyEvaluation)
     private readonly evalRepo: Repository<CompetencyEvaluation>,
+    @InjectRepository(Docente)
+    private readonly docenteRepo: Repository<Docente>,
+    @InjectRepository(CurriculumTeacherAssignment)
+    private readonly assignmentRepo: Repository<CurriculumTeacherAssignment>,
     private readonly studentsService: StudentsService,
     private readonly curriculaService: CurriculaService,
+    private readonly periodosService: PeriodosAcademicosMaestrosService,
   ) {}
 
-  async getMatrix(query: {
-    nivel: string;
-    grado: string;
-    seccion: string;
-    bimestre: number;
-    anio?: number;
-    curriculumId?: number;
-    areaId?: number;
-  }): Promise<CompetencyMatrixResponse> {
+  async getPeriodMeta(): Promise<{ bimestreActual: number }> {
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    return { bimestreActual };
+  }
+
+  async getMatrix(
+    query: {
+      nivel: string;
+      grado: string;
+      seccion: string;
+      bimestre: number;
+      anio?: number;
+      curriculumId?: number;
+      areaId?: number;
+      cursoId?: number;
+    },
+    user?: RequestUser,
+  ): Promise<CompetencyMatrixResponse> {
+    const esDocentePortal = this.esDocentePortal(user);
+    if (esDocentePortal) {
+      if (!query.cursoId) {
+        throw new BadRequestException(
+          'Debe indicar el curso asignado para registrar competencias',
+        );
+      }
+      await this.assertDocenteAsignado(user!, {
+        nivel: query.nivel,
+        grado: query.grado,
+        seccion: query.seccion,
+        cursoId: query.cursoId,
+      });
+    }
+
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
     const curriculum = await this.resolveCurriculum(
       query.nivel,
       query.anio ?? new Date().getFullYear(),
@@ -111,13 +151,24 @@ export class CompetencyEvaluationsService {
       query.nivel,
     );
 
-    const cursosGrado = catalog.cursos.filter(
+    let cursosGrado = catalog.cursos.filter(
       (c) =>
         c.nivel === query.nivel &&
         c.activo &&
         Array.isArray(c.grados) &&
         c.grados.some((g) => gradosCoinciden(query.nivel, g, query.grado)),
     );
+
+    if (query.cursoId) {
+      cursosGrado = cursosGrado.filter((c) => c.id === query.cursoId);
+      if (!cursosGrado.length) {
+        throw new NotFoundException(
+          'Curso no encontrado en la malla del grado indicado',
+        );
+      }
+    }
+
+    const cursoFiltrado = query.cursoId ? cursosGrado[0] : undefined;
     const cursoIds = new Set(cursosGrado.map((c) => c.id));
     const competencias = catalog.competencias.filter((c) =>
       cursoIds.has(c.cursoId),
@@ -169,7 +220,9 @@ export class CompetencyEvaluationsService {
     const studentIds = alumnos.map((a) => a.id);
 
     const evaluaciones =
-      competenciaIds.length && studentIds.length
+      competenciaIds.length &&
+      studentIds.length &&
+      query.bimestre <= bimestreActual
         ? await this.evalRepo.find({
             where: {
               anio,
@@ -189,6 +242,10 @@ export class CompetencyEvaluationsService {
         tipoPeriodo: curriculum.tipoPeriodo,
       },
       bimestre: query.bimestre,
+      bimestreActual,
+      bimestreHabilitado: query.bimestre <= bimestreActual,
+      cursoId: cursoFiltrado?.id,
+      cursoNombre: cursoFiltrado?.nombre,
       nivel: query.nivel,
       grado: query.grado,
       seccion: query.seccion,
@@ -262,13 +319,190 @@ export class CompetencyEvaluationsService {
     };
   }
 
-  async saveBulk(dto: SaveCompetencyEvaluationsBulkDto) {
+  async computeAreaAverages(query: {
+    nivel: string;
+    grado: string;
+    seccion: string;
+    area?: string;
+    busqueda?: string;
+    bimestreActual: number;
+    anio?: number;
+  }) {
+    const anio = query.anio ?? new Date().getFullYear();
+    const matrix = await this.getMatrix({
+      nivel: query.nivel,
+      grado: query.grado,
+      seccion: query.seccion,
+      bimestre: 1,
+      anio,
+    });
+
+    let areasMatrix = matrix.areas;
+    if (query.area) {
+      areasMatrix = areasMatrix.filter((a) => a.nombre === query.area);
+    }
+
+    let alumnos = matrix.alumnos;
+    if (query.busqueda?.trim()) {
+      const q = query.busqueda.trim().toLowerCase();
+      alumnos = alumnos.filter((a) => a.nombre.toLowerCase().includes(q));
+    }
+
+    const competenciaIds = areasMatrix.flatMap((a) =>
+      a.competencias.map((c) => c.id),
+    );
+    const studentIds = alumnos.map((a) => a.id);
+    const bimestres = [1, 2, 3, 4].filter((b) => b <= query.bimestreActual);
+
+    const evaluaciones =
+      competenciaIds.length && studentIds.length && bimestres.length
+        ? await this.evalRepo.find({
+            where: {
+              anio,
+              competenciaId: In(competenciaIds),
+              studentId: In(studentIds),
+              bimestre: In(bimestres),
+            },
+          })
+        : [];
+
+    const evalKey = (studentId: number, competenciaId: number, bimestre: number) =>
+      `${studentId}|${competenciaId}|${bimestre}`;
+    const evalMap = new Map(
+      evaluaciones.map((e) => [
+        evalKey(e.studentId, e.competenciaId, e.bimestre),
+        e.nivelLogro,
+      ]),
+    );
+
+    const nivelAreaBimestre = (
+      studentId: number,
+      area: (typeof areasMatrix)[number],
+      bimestre: number,
+    ): NivelLogro | null => {
+      if (bimestre > query.bimestreActual) return null;
+      const niveles = area.competencias
+        .map((c) => evalMap.get(evalKey(studentId, c.id, bimestre)))
+        .filter(Boolean) as NivelLogro[];
+      return calcPromedioNivel(niveles);
+    };
+
+    const alumnosResult = alumnos.map((alumno) => {
+      const areas = areasMatrix.map((area) => {
+        const b1 = nivelAreaBimestre(alumno.id, area, 1);
+        const b2 = nivelAreaBimestre(alumno.id, area, 2);
+        const b3 = nivelAreaBimestre(alumno.id, area, 3);
+        const b4 = nivelAreaBimestre(alumno.id, area, 4);
+        const parciales = [b1, b2, b3, b4]
+          .slice(0, query.bimestreActual)
+          .filter(Boolean) as NivelLogro[];
+        return {
+          area: area.nombre,
+          b1,
+          b2,
+          b3,
+          b4,
+          promedioParcial: calcPromedioNivel(parciales),
+        };
+      });
+
+      const allNiveles = areas.flatMap((a) =>
+        [a.b1, a.b2, a.b3, a.b4]
+          .slice(0, query.bimestreActual)
+          .filter(Boolean),
+      ) as NivelLogro[];
+
+      return {
+        studentId: alumno.id,
+        estudiante: alumno.nombre,
+        nivel: query.nivel,
+        grado: query.grado,
+        seccion: query.seccion,
+        areas,
+        promedioGeneral: calcPromedioNivel(allNiveles),
+      };
+    });
+
+    const rank = (n: NivelLogro | null) =>
+      ({ AD: 4, A: 3, B: 2, C: 1 } as Record<NivelLogro, number>)[n ?? 'C'] ?? 0;
+    alumnosResult.sort(
+      (a, b) => rank(b.promedioGeneral) - rank(a.promedioGeneral),
+    );
+
+    const nivelesGlobales = alumnosResult
+      .map((a) => a.promedioGeneral)
+      .filter(Boolean) as NivelLogro[];
+
+    return {
+      anio,
+      areasDisponibles: areasMatrix.map((a) => a.nombre),
+      alumnos: alumnosResult,
+      resumen: {
+        totalAlumnos: alumnosResult.length,
+        promedioAula: calcPromedioNivel(nivelesGlobales),
+        aprobados: alumnosResult.filter(
+          (a) => a.promedioGeneral && a.promedioGeneral !== 'C',
+        ).length,
+        enRiesgo: alumnosResult.filter((a) => a.promedioGeneral === 'C').length,
+        destacados: alumnosResult.filter((a) => a.promedioGeneral === 'AD').length,
+      },
+    };
+  }
+
+  async saveBulk(dto: SaveCompetencyEvaluationsBulkDto, user?: RequestUser) {
+    const esDocentePortal = this.esDocentePortal(user);
+    if (esDocentePortal) {
+      if (!dto.cursoId) {
+        throw new BadRequestException(
+          'Debe indicar el curso asignado para registrar competencias',
+        );
+      }
+      await this.assertDocenteAsignado(user!, {
+        nivel: dto.nivel,
+        grado: dto.grado,
+        seccion: dto.seccion,
+        cursoId: dto.cursoId,
+      });
+    }
+
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    if (dto.bimestre > bimestreActual) {
+      throw new BadRequestException(
+        `El bimestre ${dto.bimestre} aún no está habilitado. Periodo actual: ${bimestreActual}° bimestre.`,
+      );
+    }
+
     const curriculum = await this.resolveCurriculum(
       dto.nivel,
       dto.anio ?? new Date().getFullYear(),
       dto.curriculumId,
     );
     const anio = dto.anio ?? curriculum.anio;
+
+    if (dto.cursoId && dto.entries.length) {
+      const matrix = await this.getMatrix(
+        {
+          nivel: dto.nivel,
+          grado: dto.grado,
+          seccion: dto.seccion,
+          bimestre: dto.bimestre,
+          anio,
+          curriculumId: curriculum.id,
+          cursoId: dto.cursoId,
+        },
+        user,
+      );
+      const allowed = new Set(
+        matrix.areas.flatMap((a) => a.competencias.map((c) => c.id)),
+      );
+      for (const entry of dto.entries) {
+        if (!allowed.has(entry.competenciaId)) {
+          throw new BadRequestException(
+            'Solo puede calificar competencias de su curso asignado',
+          );
+        }
+      }
+    }
 
     let saved = 0;
     let deleted = 0;
@@ -416,5 +650,48 @@ export class CompetencyEvaluationsService {
         grado: s.grado,
         seccion: s.seccion,
       }));
+  }
+
+  private esDocentePortal(user?: RequestUser): boolean {
+    if (!user || user.esAdmin) return false;
+    return user.roles.includes('DOCENTE');
+  }
+
+  private async assertDocenteAsignado(
+    user: RequestUser,
+    query: {
+      nivel: string;
+      grado: string;
+      seccion: string;
+      cursoId: number;
+    },
+  ): Promise<void> {
+    const docente = await this.docenteRepo.findOne({
+      where: { userId: +user.id, estado: 'activo' },
+    });
+    if (!docente) {
+      throw new ForbiddenException(
+        'No hay un docente activo vinculado a este usuario',
+      );
+    }
+
+    const seccion = query.seccion.trim().toUpperCase();
+    const grado = normalizeGradoMatricula(query.grado);
+    const assignments = await this.assignmentRepo.find({
+      where: { docenteId: docente.id, activo: true, cursoId: query.cursoId },
+    });
+
+    const ok = assignments.some(
+      (a) =>
+        a.nivel.trim() === query.nivel.trim() &&
+        normalizeGradoMatricula(a.grado) === grado &&
+        (a.secciones ?? []).some((s) => s.trim().toUpperCase() === seccion),
+    );
+
+    if (!ok) {
+      throw new ForbiddenException(
+        'No tiene asignación activa para calificar este curso en el salón indicado',
+      );
+    }
   }
 }

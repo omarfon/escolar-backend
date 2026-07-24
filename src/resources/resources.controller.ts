@@ -12,19 +12,23 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { CreateResourceDto, UpdateResourceDto } from './dto/resource.dto';
+import {
+  CreateResourceDto,
+  UpdateResourceDto,
+  UpdateResourceVisibilityDto,
+} from './dto/resource.dto';
 import { ResourceTipo } from './entities/teacher-resource.entity';
 import { saveResourceFile } from './resources-upload.util';
 import { ResourcesService } from './resources.service';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 
 @Controller('resources')
-@RequirePermiso('comunicados.ver')
+@RequirePermiso('comunicados.ver', 'evaluacion.ver')
 export class ResourcesController {
   constructor(private readonly resourcesService: ResourcesService) {}
 
   @Post('upload')
-  @RequirePermiso('comunicados.enviar')
+  @RequirePermiso('comunicados.enviar', 'evaluacion.registrar', 'evaluacion.editar')
   @UseInterceptors(FileInterceptor('file'))
   uploadFile(
     @UploadedFile() file: Express.Multer.File,
@@ -40,7 +44,7 @@ export class ResourcesController {
   }
 
   @Post()
-  @RequirePermiso('comunicados.enviar')
+  @RequirePermiso('comunicados.enviar', 'evaluacion.registrar', 'evaluacion.editar')
   create(@Body() dto: CreateResourceDto) {
     return this.resourcesService.create(dto);
   }
@@ -71,14 +75,20 @@ export class ResourcesController {
     return this.resourcesService.findOne(+id);
   }
 
+  @Patch(':id/visibility')
+  @RequirePermiso('comunicados.enviar', 'evaluacion.registrar', 'evaluacion.editar')
+  setVisibility(@Param('id') id: string, @Body() dto: UpdateResourceVisibilityDto) {
+    return this.resourcesService.update(+id, { visible: dto.visible });
+  }
+
   @Patch(':id')
-  @RequirePermiso('comunicados.enviar')
+  @RequirePermiso('comunicados.enviar', 'evaluacion.registrar', 'evaluacion.editar')
   update(@Param('id') id: string, @Body() dto: UpdateResourceDto) {
     return this.resourcesService.update(+id, dto);
   }
 
   @Delete(':id')
-  @RequirePermiso('comunicados.enviar')
+  @RequirePermiso('comunicados.enviar', 'evaluacion.registrar', 'evaluacion.editar')
   remove(@Param('id') id: string) {
     return this.resourcesService.remove(+id);
   }

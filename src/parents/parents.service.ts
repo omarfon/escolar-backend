@@ -27,10 +27,15 @@ import {
 import { Docente } from '../maestros/docentes/entities/docente.entity';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 import { StudentsService } from '../students/students.service';
-import { TasksService } from '../tasks/tasks.service';
+import { TasksService, TaskResourceEmbed } from '../tasks/tasks.service';
+import { TemarioService } from '../temario/temario.service';
+import { ResourcesService } from '../resources/resources.service';
 import { ParentStudent } from './entities/parent-student.entity';
 import { ParentTeacherMessage } from './entities/parent-teacher-message.entity';
 import { eventAppliesToChild } from './parent-events.util';
+import { GradingConfigService } from '../grading/grading-config.service';
+import { PromediosService } from '../promedios/promedios.service';
+import type { CursoPromedio } from '../promedios/promedios.types';
 
 export interface HijoResumen {
   studentId: number;
@@ -52,6 +57,10 @@ export interface CursoSeguimiento {
   b2: number | null;
   b3: number | null;
   b4: number | null;
+  b1Nivel: string | null;
+  b2Nivel: string | null;
+  b3Nivel: string | null;
+  b4Nivel: string | null;
   ultimasNotas: {
     id: number;
     descripcion: string;
@@ -85,6 +94,8 @@ export interface TareaSeguimiento {
   fechaEntrega: string;
   estado: string;
   prioridad: string;
+  resourceId: number | null;
+  resource: TaskResourceEmbed | null;
   comentarioEntrega: string;
   archivoEntregaUrl: string | null;
   archivoEntregaNombre: string | null;
@@ -93,6 +104,17 @@ export interface TareaSeguimiento {
   nota: number | null;
   retroalimentacion: string;
   calificadoAt: string | null;
+}
+
+export interface ParentTareasResponse {
+  estudiante: HijoResumen;
+  tareas: TareaSeguimiento[];
+}
+
+export interface ParentClasesResponse {
+  estudiante: HijoResumen;
+  temario: Awaited<ReturnType<TemarioService['findForStudentId']>>;
+  recursos: Awaited<ReturnType<ResourcesService['findAll']>>;
 }
 
 export interface SeguimientoAcademico {
@@ -164,9 +186,13 @@ export class ParentsService {
     private readonly studentsService: StudentsService,
     private readonly attendancesService: AttendancesService,
     private readonly tasksService: TasksService,
+    private readonly temarioService: TemarioService,
+    private readonly resourcesService: ResourcesService,
     private readonly eventsService: EventsService,
     private readonly horariosService: HorariosService,
     private readonly treasuryService: TreasuryService,
+    private readonly gradingConfigService: GradingConfigService,
+    private readonly promediosService: PromediosService,
   ) {}
 
   async getChildProfile(studentId: number, parentEmail: string) {
@@ -485,6 +511,46 @@ export class ParentsService {
     );
   }
 
+  async getTasksForChild(
+    studentId: number,
+    parentEmail: string,
+  ): Promise<ParentTareasResponse> {
+    const parentesco = await this.assertParentAccess(studentId, parentEmail);
+    const student = await this.studentsService.findOne(studentId);
+    const tasks = await this.tasksService.findAll({ studentId });
+
+    return {
+      estudiante: this.toHijoResumen(student, parentesco),
+      tareas: tasks.map((t) => this.toTareaSeguimiento(t)),
+    };
+  }
+
+  async getClasesForChild(
+    studentId: number,
+    parentEmail: string,
+    query?: { curso?: string; anioEscolar?: number },
+  ): Promise<ParentClasesResponse> {
+    const parentesco = await this.assertParentAccess(studentId, parentEmail);
+    const student = await this.studentsService.findOne(studentId);
+    const temario = await this.temarioService.findForStudentId(studentId, {
+      curso: query?.curso,
+      anioEscolar: query?.anioEscolar,
+    });
+    const recursos = await this.resourcesService.findAll({
+      nivel: student.nivel,
+      grado: student.grado,
+      seccion: student.seccion,
+      curso: query?.curso,
+      visible: true,
+    });
+
+    return {
+      estudiante: this.toHijoResumen(student, parentesco),
+      temario,
+      recursos,
+    };
+  }
+
   async getAcademicTracking(
     studentId: number,
     parentEmail?: string,
@@ -502,13 +568,14 @@ export class ParentsService {
     const attendances = await this.attendancesService.findAll({ studentId });
     const tasks = await this.tasksService.findAll({ studentId });
 
-    const cursos = this.buildCursosSeguimiento(grades);
-    const promediosCursos = cursos
-      .map(c => c.promedio)
-      .filter((v): v is number => v !== null);
-    const promedioGeneral = promediosCursos.length
-      ? round2(promediosCursos.reduce((s, v) => s + v, 0) / promediosCursos.length)
-      : null;
+    const promediosAlumno = await this.promediosService.getForStudent(studentId);
+    const cursosAsignados = await this.getAssignedCourseNamesForStudent(student);
+    const cursos = this.buildCursosSeguimiento(
+      promediosAlumno.cursos,
+      grades,
+      cursosAsignados,
+    );
+    const promedioGeneral = promediosAlumno.promedioGeneral;
 
     const presentes = attendances.filter(a => a.estado === 'P').length;
     const faltas = attendances.filter(a => a.estado === 'F').length;
@@ -520,7 +587,10 @@ export class ParentsService {
     return {
       estudiante: this.toHijoResumen(student, parentesco),
       promedioGeneral,
-      nivelGeneral: promedioGeneral !== null ? nivelFromNota(promedioGeneral) : null,
+      nivelGeneral:
+        promedioGeneral !== null
+          ? this.gradingConfigService.nivelFromNota(promedioGeneral)
+          : promediosAlumno.nivelGeneral,
       asistencia: {
         asistenciaPct: totalDias ? Math.round((presentes / totalDias) * 100) : 0,
         totalDias,
@@ -545,22 +615,45 @@ export class ParentsService {
       tareasEntregadas: tasks.filter(t => t.estado === 'SUBMITTED').length,
       tareasCalificadas: tasks.filter(t => t.estado === 'GRADED').length,
       cursos,
-      tareas: tasks.map(t => ({
-        id: t.id,
-        titulo: t.titulo,
-        curso: t.curso,
-        fechaEntrega: t.fechaEntrega,
-        estado: t.estado,
-        prioridad: t.prioridad,
-        comentarioEntrega: t.comentarioEntrega ?? '',
-        archivoEntregaUrl: t.archivoEntregaUrl ?? null,
-        archivoEntregaNombre: t.archivoEntregaNombre ?? null,
-        archivoEntregaMime: t.archivoEntregaMime ?? null,
-        fechaEntregaReal: t.fechaEntregaReal ?? null,
-        nota: t.nota ?? null,
-        retroalimentacion: t.retroalimentacion ?? '',
-        calificadoAt: t.calificadoAt ?? null,
-      })),
+      tareas: tasks.map((t) => this.toTareaSeguimiento(t)),
+    };
+  }
+
+  private toTareaSeguimiento(t: {
+    id: number;
+    titulo: string;
+    curso: string;
+    fechaEntrega: string;
+    estado: string;
+    prioridad: string;
+    resourceId: number | null;
+    resource: TaskResourceEmbed | null;
+    comentarioEntrega: string;
+    archivoEntregaUrl: string | null;
+    archivoEntregaNombre: string | null;
+    archivoEntregaMime: string | null;
+    fechaEntregaReal: string | null;
+    nota: number | null;
+    retroalimentacion: string;
+    calificadoAt: string | null;
+  }): TareaSeguimiento {
+    return {
+      id: t.id,
+      titulo: t.titulo,
+      curso: t.curso,
+      fechaEntrega: t.fechaEntrega,
+      estado: t.estado,
+      prioridad: t.prioridad,
+      resourceId: t.resourceId ?? null,
+      resource: t.resource ?? null,
+      comentarioEntrega: t.comentarioEntrega ?? '',
+      archivoEntregaUrl: t.archivoEntregaUrl ?? null,
+      archivoEntregaNombre: t.archivoEntregaNombre ?? null,
+      archivoEntregaMime: t.archivoEntregaMime ?? null,
+      fechaEntregaReal: t.fechaEntregaReal ?? null,
+      nota: t.nota ?? null,
+      retroalimentacion: t.retroalimentacion ?? '',
+      calificadoAt: t.calificadoAt ?? null,
     };
   }
 
@@ -638,37 +731,77 @@ export class ParentsService {
     throw new NotFoundException('El estudiante no está vinculado a este apoderado');
   }
 
-  private buildCursosSeguimiento(grades: Grade[]): CursoSeguimiento[] {
-    const byCurso = new Map<string, Grade[]>();
+  private async getAssignedCourseNamesForStudent(student: {
+    nivel: string;
+    grado: string;
+    seccion: string;
+  }): Promise<string[]> {
+    const anio = new Date().getFullYear();
+    const ctx = await this.horariosService.getContext(anio);
+
+    const nivel = student.nivel;
+    const grado = normalizeGradoMatricula(student.grado);
+    const seccion = student.seccion.trim().toUpperCase();
+
+    const blocks = ctx.blocks.filter(
+      (b) =>
+        b.nivel === nivel &&
+        normalizeGradoMatricula(b.grado) === grado &&
+        b.seccion.trim().toUpperCase() === seccion,
+    );
+    const cursoIds = new Set(blocks.map((b) => b.cursoId));
+
+    return ctx.cursos
+      .filter((c) => cursoIds.has(c.id))
+      .map((c) => c.nombre)
+      .sort((a, b) => a.localeCompare(b, 'es'));
+  }
+
+  private buildCursosSeguimiento(
+    promedios: CursoPromedio[],
+    grades: Grade[],
+    cursosAsignados: string[],
+  ): CursoSeguimiento[] {
+    const promediosByCurso = new Map<string, CursoPromedio>();
+    for (const cp of promedios) {
+      const existing = promediosByCurso.get(cp.curso);
+      if (!existing || cp.tipo === 'numerico') {
+        promediosByCurso.set(cp.curso, cp);
+      }
+    }
+    const gradesByCurso = new Map<string, Grade[]>();
     for (const grade of grades) {
-      const list = byCurso.get(grade.curso) ?? [];
+      const list = gradesByCurso.get(grade.curso) ?? [];
       list.push(grade);
-      byCurso.set(grade.curso, list);
+      gradesByCurso.set(grade.curso, list);
     }
 
-    return [...byCurso.entries()].map(([curso, items]) => {
-      const b1 = avgBimestre(items, 1);
-      const b2 = avgBimestre(items, 2);
-      const b3 = avgBimestre(items, 3);
-      const b4 = avgBimestre(items, 4);
-      const bimAvgs = [b1, b2, b3, b4].filter((v): v is number => v !== null);
-      const promedio = bimAvgs.length
-        ? round2(bimAvgs.reduce((s, v) => s + v, 0) / bimAvgs.length)
-        : null;
+    const cursoNames =
+      cursosAsignados.length > 0
+        ? cursosAsignados
+        : [...promediosByCurso.keys()].sort((a, b) => a.localeCompare(b, 'es'));
+
+    return cursoNames.map((curso) => {
+      const cp = promediosByCurso.get(curso);
+      const items = gradesByCurso.get(curso) ?? [];
 
       return {
         curso,
-        promedio,
-        nivel: promedio !== null ? nivelFromNota(promedio) : null,
-        b1,
-        b2,
-        b3,
-        b4,
+        promedio: cp?.promedioAnual ?? null,
+        nivel: cp?.nivel ?? null,
+        b1: cp?.b1 ?? null,
+        b2: cp?.b2 ?? null,
+        b3: cp?.b3 ?? null,
+        b4: cp?.b4 ?? null,
+        b1Nivel: cp?.b1Nivel ?? null,
+        b2Nivel: cp?.b2Nivel ?? null,
+        b3Nivel: cp?.b3Nivel ?? null,
+        b4Nivel: cp?.b4Nivel ?? null,
         ultimasNotas: items
           .slice()
           .sort((a, b) => b.fechaEvaluacion.localeCompare(a.fechaEvaluacion))
           .slice(0, 5)
-          .map(g => ({
+          .map((g) => ({
             id: g.id,
             descripcion: g.descripcion ?? g.tipo,
             nota: g.nota,
@@ -705,19 +838,3 @@ export class ParentsService {
   }
 }
 
-function avgBimestre(items: Grade[], bimestre: number): number | null {
-  const filtered = items.filter(g => g.bimestre === bimestre);
-  if (!filtered.length) return null;
-  return round2(filtered.reduce((s, g) => s + Number(g.nota), 0) / filtered.length);
-}
-
-function round2(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-function nivelFromNota(nota: number): string {
-  if (nota >= 17.5) return 'AD';
-  if (nota >= 14) return 'A';
-  if (nota >= 11) return 'B';
-  return 'C';
-}

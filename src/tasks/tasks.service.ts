@@ -2,13 +2,27 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
-import { TeacherResource } from '../resources/entities/teacher-resource.entity';
+import {
+  ResourceTipo,
+  TeacherResource,
+} from '../resources/entities/teacher-resource.entity';
 import { Student } from '../students/entities/student.entity';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { GradeTaskDto } from './dto/grade-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { Task, TaskEstado } from './entities/task.entity';
 import { saveTaskSubmissionFile } from './tasks-upload.util';
+
+export interface TaskResourceEmbed {
+  id: number;
+  descripcion: string;
+  tipo: ResourceTipo;
+  url: string;
+  nombreArchivo: string;
+  mimeType: string;
+  tamanoBytes: number;
+  docente: string;
+}
 
 export interface TaskResponse {
   id: number;
@@ -18,6 +32,7 @@ export interface TaskResponse {
   studentGrado: string;
   studentSeccion: string;
   resourceId: number | null;
+  resource: TaskResourceEmbed | null;
   titulo: string;
   curso: string;
   fechaEntrega: string;
@@ -110,7 +125,14 @@ export class TasksService {
     }
 
     const studentMap = await this.loadStudentMap(tasks.map((t) => t.studentId));
-    return tasks.map((t) => this.toResponseSync(t, studentMap.get(t.studentId)));
+    const resourceByTaskId = await this.resolveResourcesForTasks(tasks, studentMap);
+    return tasks.map((t) =>
+      this.toResponseSync(
+        t,
+        studentMap.get(t.studentId),
+        resourceByTaskId.get(t.id),
+      ),
+    );
   }
 
   async findEntregasForResource(query: {
@@ -146,7 +168,7 @@ export class TasksService {
     const responses = salonStudents.map((student) => {
       const task = taskByStudent.get(student.id);
       if (task) {
-        return this.toResponseSync(task, student);
+        return this.toResponseSync(task, student, resource);
       }
       return this.buildEmptyEntregaResponse(student, resource);
     });
@@ -343,6 +365,7 @@ export class TasksService {
       studentGrado: student.grado,
       studentSeccion: student.seccion,
       resourceId: resource.id,
+      resource: this.resourceToEmbed(resource),
       titulo: resource.titulo,
       curso: resource.curso,
       fechaEntrega: resource.fechaEntrega ?? '',
@@ -359,7 +382,87 @@ export class TasksService {
     };
   }
 
-  private toResponseSync(task: Task, student?: Student): TaskResponse {
+  private async loadResourceMap(
+    resourceIds: number[],
+  ): Promise<Map<number, TeacherResource>> {
+    const uniqueIds = [...new Set(resourceIds)];
+    if (!uniqueIds.length) return new Map();
+    const resources = await this.resourcesRepository.find({
+      where: { id: In(uniqueIds) },
+    });
+    return new Map(resources.map((r) => [r.id, r]));
+  }
+
+  private async resolveResourcesForTasks(
+    tasks: Task[],
+    studentMap: Map<number, Student>,
+  ): Promise<Map<number, TeacherResource>> {
+    const preloaded = await this.loadResourceMap(
+      tasks.map((t) => t.resourceId).filter((id): id is number => id != null),
+    );
+    const byTaskId = new Map<number, TeacherResource>();
+
+    for (const task of tasks) {
+      const student = studentMap.get(task.studentId);
+      let resource = task.resourceId ? preloaded.get(task.resourceId) : undefined;
+
+      if (!resource && student) {
+        resource = await this.findResourceForTask(task, student);
+        if (resource) {
+          preloaded.set(resource.id, resource);
+          if (!task.resourceId) {
+            task.resourceId = resource.id;
+            await this.tasksRepository.save(task);
+          }
+        }
+      }
+
+      if (resource) {
+        byTaskId.set(task.id, resource);
+      }
+    }
+
+    return byTaskId;
+  }
+
+  private async findResourceForTask(
+    task: Task,
+    student: Student,
+  ): Promise<TeacherResource | undefined> {
+    const gradoNorm = normalizeGradoMatricula(student.grado);
+    const seccionNorm = student.seccion.trim().toUpperCase();
+    const nivel = student.nivel.trim();
+
+    const candidates = await this.resourcesRepository.find({
+      where: { titulo: task.titulo, curso: task.curso, nivel },
+      order: { fechaPublicacion: 'DESC', id: 'DESC' },
+    });
+
+    return candidates.find(
+      (r) =>
+        normalizeGradoMatricula(r.grado) === gradoNorm &&
+        r.seccion.trim().toUpperCase() === seccionNorm,
+    );
+  }
+
+  private resourceToEmbed(resource: TeacherResource): TaskResourceEmbed {
+    return {
+      id: resource.id,
+      descripcion: resource.descripcion ?? '',
+      tipo: resource.tipo,
+      url: resource.url ?? '',
+      nombreArchivo: resource.nombreArchivo ?? '',
+      mimeType: resource.mimeType ?? '',
+      tamanoBytes: resource.tamanoBytes ?? 0,
+      docente: resource.docente ?? '',
+    };
+  }
+
+  private toResponseSync(
+    task: Task,
+    student?: Student,
+    resource?: TeacherResource,
+  ): TaskResponse {
     return {
       id: task.id,
       studentId: task.studentId,
@@ -368,6 +471,7 @@ export class TasksService {
       studentGrado: student?.grado ?? '',
       studentSeccion: student?.seccion ?? '',
       resourceId: task.resourceId ?? null,
+      resource: resource ? this.resourceToEmbed(resource) : null,
       titulo: task.titulo,
       curso: task.curso,
       fechaEntrega: task.fechaEntrega,
@@ -391,6 +495,14 @@ export class TasksService {
     const student = await this.studentsRepository.findOneBy({
       id: task.studentId,
     });
-    return this.toResponseSync(task, student ?? undefined);
+    const resourceMap = await this.resolveResourcesForTasks(
+      [task],
+      student ? new Map([[task.studentId, student]]) : new Map(),
+    );
+    return this.toResponseSync(
+      task,
+      student ?? undefined,
+      resourceMap.get(task.id),
+    );
   }
 }

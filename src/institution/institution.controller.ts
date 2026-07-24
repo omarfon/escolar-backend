@@ -33,6 +33,15 @@ export class InstitutionController {
   }
 
   @Get('education-levels')
+  @RequirePermiso(
+    'admin.institucional',
+    'evaluacion.ver',
+    'asistencia.ver',
+    'horarios.ver',
+    'matricula.ver',
+    'estudiantes.ver',
+    'comunicados.ver',
+  )
   findAllEducationLevels() {
     return this.institutionService.findAllEducationLevels();
   }

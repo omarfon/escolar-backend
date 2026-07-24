@@ -476,6 +476,7 @@ export class AttendancesService {
     studentId?: number;
     estado?: string;
     mes?: string;
+    anioEscolar?: number;
   }) {
     const qb = this.attendancesRepository
       .createQueryBuilder('a')
@@ -489,6 +490,10 @@ export class AttendancesService {
     }
     if (query?.mes) {
       qb.andWhere("TO_CHAR(a.fecha, 'YYYY-MM') = :mes", { mes: query.mes });
+    }
+    if (query?.anioEscolar) {
+      qb.andWhere('a.fecha >= :desde', { desde: `${query.anioEscolar}-01-01` });
+      qb.andWhere('a.fecha <= :hasta', { hasta: `${query.anioEscolar}-12-31` });
     }
 
     return qb.getMany();

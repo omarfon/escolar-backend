@@ -5,6 +5,10 @@ import { EventsModule } from '../events/events.module';
 import { Grade } from '../grades/entities/grade.entity';
 import { HorariosModule } from '../horarios/horarios.module';
 import { TreasuryModule } from '../treasury/treasury.module';
+import { GradingModule } from '../grading/grading.module';
+import { PromediosModule } from '../promedios/promedios.module';
+import { TemarioModule } from '../temario/temario.module';
+import { ResourcesModule } from '../resources/resources.module';
 import { Docente } from '../maestros/docentes/entities/docente.entity';
 import { StudentsModule } from '../students/students.module';
 import { TasksModule } from '../tasks/tasks.module';
@@ -22,6 +26,10 @@ import { ParentsService } from './parents.service';
     EventsModule,
     HorariosModule,
     TreasuryModule,
+    GradingModule,
+    PromediosModule,
+    TemarioModule,
+    ResourcesModule,
   ],
   controllers: [ParentsController],
   providers: [ParentsService],

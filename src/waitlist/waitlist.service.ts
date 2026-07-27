@@ -140,7 +140,17 @@ export class WaitlistService {
 
     if (query?.nivel) qb.andWhere('w.nivel = :nivel', { nivel: query.nivel });
 
-    if (query?.grado) qb.andWhere('w.grado = :grado', { grado: query.grado });
+    if (query?.grado) {
+      const gradoNorm = normalizeGradoMatricula(query.grado);
+      qb.andWhere(
+        '(w.grado = :grado OR w.grado = :gradoNorm OR w.grado LIKE :gradoLike)',
+        {
+          grado: query.grado,
+          gradoNorm,
+          gradoLike: `${gradoNorm.replace('°', '')}%`,
+        },
+      );
+    }
 
     if (query?.estado) qb.andWhere('w.estado = :estado', { estado: query.estado });
 
@@ -207,6 +217,8 @@ export class WaitlistService {
       this.waitlistRepo.create({
 
         ...dto,
+
+        grado: gradoInstitucionalToMatricula(dto.nivel, dto.grado),
 
         email: dto.email?.trim() ?? '',
 

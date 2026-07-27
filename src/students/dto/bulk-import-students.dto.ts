@@ -15,6 +15,8 @@ import { ExpedienteResponse } from '../students.mapper';
 
 const NIVELES = ['Inicial', 'Primaria', 'Secundaria'] as const;
 const SEXOS = ['M', 'F'] as const;
+const TIPOS_DOCUMENTO = ['DNI', 'CE', 'Pasaporte', 'PTP', 'Otro'] as const;
+const PARENTESCOS = ['padre', 'madre', 'abuelo', 'tio', 'hermano', 'otro'] as const;
 
 export class BulkMatriculaRowDto {
   @IsOptional()
@@ -25,13 +27,29 @@ export class BulkMatriculaRowDto {
   @MaxLength(80)
   nombres: string;
 
+  /** Legacy: columna única; preferir apellidoPaterno + apellidoMaterno */
+  @IsOptional()
   @IsString()
   @MaxLength(80)
-  apellidos: string;
+  apellidos?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apellidoPaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apellidoMaterno?: string;
+
+  @IsOptional()
+  @IsIn(TIPOS_DOCUMENTO)
+  tipoDocumento?: (typeof TIPOS_DOCUMENTO)[number];
 
   @IsString()
-  @MinLength(8)
-  @MaxLength(8)
+  @MinLength(4)
+  @MaxLength(20)
   dni: string;
 
   @IsOptional()
@@ -46,6 +64,30 @@ export class BulkMatriculaRowDto {
   @IsOptional()
   @IsString()
   fechaNac?: string;
+
+  @IsString()
+  @MaxLength(200)
+  direccion: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  distrito?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  provincia?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  departamento?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  telefonoEmergencia?: string;
 
   @IsIn(NIVELES)
   nivel: (typeof NIVELES)[number];
@@ -75,7 +117,21 @@ export class BulkMatriculaRowDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(8)
+  @MaxLength(80)
+  apoderadoApellidoPaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apoderadoApellidoMaterno?: string;
+
+  @IsOptional()
+  @IsIn(TIPOS_DOCUMENTO)
+  apoderadoTipoDocumento?: (typeof TIPOS_DOCUMENTO)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
   apoderadoDni?: string;
 
   @IsOptional()
@@ -87,6 +143,10 @@ export class BulkMatriculaRowDto {
   @IsString()
   @MaxLength(120)
   apoderadoEmail?: string;
+
+  @IsOptional()
+  @IsIn(PARENTESCOS)
+  apoderadoParentesco?: (typeof PARENTESCOS)[number];
 }
 
 export class BulkImportMatriculaDto {
@@ -117,19 +177,31 @@ export interface BulkMatriculaPreviewItem {
   fila: number;
   nombres: string;
   apellidos: string;
+  apellidoPaterno?: string;
+  apellidoMaterno?: string;
+  tipoDocumento?: (typeof TIPOS_DOCUMENTO)[number];
   dni: string;
   email: string;
   sexo?: 'M' | 'F';
   fechaNac?: string;
+  direccion: string;
+  distrito?: string;
+  provincia?: string;
+  departamento?: string;
+  telefonoEmergencia?: string;
   nivel: (typeof NIVELES)[number];
   grado: string;
   seccion: string;
   anioIngreso?: string;
   apoderadoNombres?: string;
   apoderadoApellidos?: string;
+  apoderadoApellidoPaterno?: string;
+  apoderadoApellidoMaterno?: string;
+  apoderadoTipoDocumento?: (typeof TIPOS_DOCUMENTO)[number];
   apoderadoDni?: string;
   apoderadoTelefono?: string;
   apoderadoEmail?: string;
+  apoderadoParentesco?: (typeof PARENTESCOS)[number];
   gradoLabel: string;
   motivo?: string;
 }

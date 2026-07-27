@@ -8,6 +8,9 @@ export type EstadoCambioSeccion = 'elegible' | 'cambio_realizado';
 export interface RepresentanteData {
   nombres: string;
   apellidos: string;
+  apellidoPaterno: string;
+  apellidoMaterno: string;
+  tipoDocumento: string;
   dni: string;
   telefono: string;
   email: string;
@@ -17,6 +20,9 @@ export interface RepresentanteData {
 export const REPRESENTANTE_VACIO: RepresentanteData = {
   nombres: '',
   apellidos: '',
+  apellidoPaterno: '',
+  apellidoMaterno: '',
+  tipoDocumento: 'DNI',
   dni: '',
   telefono: '',
   email: '',
@@ -33,6 +39,12 @@ export class Student {
 
   @Column({ length: 80 })
   apellido: string;
+
+  @Column({ length: 80, default: '' })
+  apellidoPaterno: string;
+
+  @Column({ length: 80, default: '' })
+  apellidoMaterno: string;
 
   @Column({ unique: true, length: 120 })
   email: string;
@@ -52,8 +64,11 @@ export class Student {
   @Column({ length: 20, default: '' })
   codigo: string;
 
-  @Column({ length: 8, default: '' })
+  @Column({ length: 20, default: '' })
   dni: string;
+
+  @Column({ length: 15, default: 'DNI' })
+  tipoDocumento: string;
 
   @Column({ type: 'date', nullable: true })
   fechaNac: string | null;
@@ -63,6 +78,18 @@ export class Student {
 
   @Column({ type: 'text', default: '' })
   direccion: string;
+
+  @Column({ length: 80, default: '' })
+  distrito: string;
+
+  @Column({ length: 80, default: '' })
+  provincia: string;
+
+  @Column({ length: 80, default: '' })
+  departamento: string;
+
+  @Column({ length: 30, default: '' })
+  telefonoEmergencia: string;
 
   @Column({ type: 'text', default: '' })
   foto: string;

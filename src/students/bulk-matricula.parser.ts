@@ -5,6 +5,12 @@ import { BulkMatriculaRowDto } from './dto/bulk-import-students.dto';
 const NIVELES = ['Inicial', 'Primaria', 'Secundaria'] as const;
 type Nivel = (typeof NIVELES)[number];
 
+const TIPOS_DOCUMENTO = ['DNI', 'CE', 'Pasaporte', 'PTP', 'Otro'] as const;
+type TipoDocumento = (typeof TIPOS_DOCUMENTO)[number];
+
+const PARENTESCOS = ['padre', 'madre', 'abuelo', 'tio', 'hermano', 'otro'] as const;
+type Parentesco = (typeof PARENTESCOS)[number];
+
 export interface FilaParseadaMatricula extends BulkMatriculaRowDto {
   fila: number;
   errores: string[];
@@ -57,6 +63,28 @@ function normalizeGrado(value: string): string {
   return value.replace(/°/g, '').trim();
 }
 
+function normalizeTipoDocumento(value: string): TipoDocumento {
+  const v = value.trim().toUpperCase();
+  if (v === 'DNI') return 'DNI';
+  if (v === 'CE' || v === 'CARNET DE EXTRANJERIA' || v === 'CARNÉ DE EXTRANJERÍA') {
+    return 'CE';
+  }
+  if (v === 'PASAPORTE' || v === 'PASSPORT') return 'Pasaporte';
+  if (v === 'PTP') return 'PTP';
+  if (v === 'OTRO') return 'Otro';
+  return 'DNI';
+}
+
+function normalizeParentesco(value: string): Parentesco | undefined {
+  const v = value.trim().toLowerCase();
+  if (!v) return undefined;
+  if (PARENTESCOS.includes(v as Parentesco)) return v as Parentesco;
+  if (v === 'abuela' || v === 'abuelo/a') return 'abuelo';
+  if (v === 'tio/a' || v === 'tía' || v === 'tio') return 'tio';
+  if (v === 'hermana' || v === 'hermano/a') return 'hermano';
+  return 'otro';
+}
+
 function buildEmail(nombres: string, apellidos: string, dni: string): string {
   if (dni.trim()) return `alumno.${dni.trim()}@estudiante.pe`;
   const slug = `${nombres}.${apellidos}`
@@ -76,12 +104,80 @@ function splitNombreCompleto(full: string): { nombres: string; apellidos: string
   return { nombres: parts[0], apellidos: parts.slice(1).join(' ') };
 }
 
+function resolveApellidos(
+  apellidoPaterno: string,
+  apellidoMaterno: string,
+  apellidosLegacy: string,
+): { apellidoPaterno: string; apellidoMaterno: string; apellidos: string } {
+  const paterno = apellidoPaterno.trim();
+  const materno = apellidoMaterno.trim();
+  if (paterno || materno) {
+    return {
+      apellidoPaterno: paterno,
+      apellidoMaterno: materno,
+      apellidos: [paterno, materno].filter(Boolean).join(' '),
+    };
+  }
+  const legacy = apellidosLegacy.trim();
+  if (!legacy) {
+    return { apellidoPaterno: '', apellidoMaterno: '', apellidos: '' };
+  }
+  const parts = legacy.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      apellidoPaterno: parts[0],
+      apellidoMaterno: parts.slice(1).join(' '),
+      apellidos: legacy,
+    };
+  }
+  return { apellidoPaterno: legacy, apellidoMaterno: '', apellidos: legacy };
+}
+
+function validarNumeroDocumento(tipo: TipoDocumento, numero: string): string | null {
+  const n = numero.trim();
+  if (!n) return 'Numero de documento es obligatorio';
+  switch (tipo) {
+    case 'DNI':
+      if (!/^\d{8}$/.test(n)) return 'El DNI debe tener exactamente 8 digitos';
+      break;
+    case 'CE':
+      if (!/^[A-Za-z0-9]{9,12}$/.test(n)) {
+        return 'El CE debe tener entre 9 y 12 caracteres alfanumericos';
+      }
+      break;
+    case 'Pasaporte':
+      if (n.length < 6 || n.length > 20) {
+        return 'El pasaporte debe tener entre 6 y 20 caracteres';
+      }
+      break;
+    default:
+      if (n.length < 4 || n.length > 20) {
+        return 'El numero de documento debe tener entre 4 y 20 caracteres';
+      }
+  }
+  return null;
+}
+
+function validarCelular(celular: string, requerido = false): string | null {
+  const n = celular.trim().replace(/\s/g, '');
+  if (!n) return requerido ? 'Celular es obligatorio' : null;
+  if (!/^9\d{8}$/.test(n)) return 'El celular debe tener 9 digitos y comenzar con 9';
+  return null;
+}
+
 function validarColumnas(headers: string[]): void {
-  const required = ['nombres', 'apellidos', 'dni', 'nivel', 'grado', 'seccion'];
+  const required = ['nombres', 'dni', 'nivel', 'grado', 'seccion', 'direccion'];
   const missing = required.filter((h) => !headers.includes(h));
   if (missing.length) {
     throw new BadRequestException(
       `La plantilla no tiene las columnas requeridas: ${missing.join(', ')}`,
+    );
+  }
+  const tieneApellidosSeparados =
+    headers.includes('apellido_paterno') && headers.includes('apellido_materno');
+  if (!tieneApellidosSeparados && !headers.includes('apellidos')) {
+    throw new BadRequestException(
+      'La plantilla debe incluir apellido_paterno y apellido_materno, o la columna apellidos',
     );
   }
 }
@@ -90,8 +186,25 @@ function validarFila(row: BulkMatriculaRowDto & { fila: number }): FilaParseadaM
   const errores: string[] = [];
 
   if (!row.nombres.trim()) errores.push('Nombres es obligatorio');
-  if (!row.apellidos.trim()) errores.push('Apellidos es obligatorio');
-  if (!/^\d{8}$/.test(row.dni)) errores.push('DNI debe tener 8 digitos');
+
+  const apellidosResueltos = resolveApellidos(
+    row.apellidoPaterno ?? '',
+    row.apellidoMaterno ?? '',
+    row.apellidos ?? '',
+  );
+  if (!apellidosResueltos.apellidoPaterno.trim()) {
+    errores.push('Apellido paterno es obligatorio');
+  }
+  if (!apellidosResueltos.apellidoMaterno.trim()) {
+    errores.push('Apellido materno es obligatorio');
+  }
+
+  const tipoDoc = row.tipoDocumento ?? 'DNI';
+  const docError = validarNumeroDocumento(tipoDoc, row.dni);
+  if (docError) errores.push(docError);
+
+  if (!row.direccion?.trim()) errores.push('Direccion es obligatoria');
+
   if (row.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email)) {
     errores.push('Email invalido');
   }
@@ -106,6 +219,9 @@ function validarFila(row: BulkMatriculaRowDto & { fila: number }): FilaParseadaM
     errores.push('Sexo invalido. Valores: M, F');
   }
 
+  const telError = validarCelular(row.telefonoEmergencia ?? '', false);
+  if (telError) errores.push(telError);
+
   const gradoNum = parseInt(row.grado, 10);
   if (row.nivel === 'Inicial' && (gradoNum < 1 || gradoNum > 3)) {
     errores.push('Grado Inicial debe ser 1, 2 o 3');
@@ -117,44 +233,84 @@ function validarFila(row: BulkMatriculaRowDto & { fila: number }): FilaParseadaM
     errores.push('Grado Secundaria debe ser 1 a 5');
   }
 
-  return { ...row, errores, valido: errores.length === 0 };
+  if (row.apoderadoNombres?.trim()) {
+    const apoTipo = row.apoderadoTipoDocumento ?? 'DNI';
+    if (row.apoderadoDni?.trim()) {
+      const apoDocError = validarNumeroDocumento(apoTipo, row.apoderadoDni);
+      if (apoDocError) errores.push(`Apoderado: ${apoDocError}`);
+    }
+    const apoTelError = validarCelular(row.apoderadoTelefono ?? '', true);
+    if (apoTelError) errores.push(`Apoderado: ${apoTelError}`);
+  }
+
+  return {
+    ...row,
+    apellidoPaterno: apellidosResueltos.apellidoPaterno,
+    apellidoMaterno: apellidosResueltos.apellidoMaterno,
+    apellidos: apellidosResueltos.apellidos,
+    errores,
+    valido: errores.length === 0,
+  };
 }
 
 function mapRecord(fila: number, data: Record<string, string>): FilaParseadaMatricula {
   const nombres = data['nombres'] ?? '';
-  const apellidos = data['apellidos'] ?? '';
   const dni = data['dni'] ?? '';
   const nivel = normalizeNivel(data['nivel'] ?? '');
   const sexoRaw = normalizeSexo(data['sexo'] ?? '');
+  const tipoDocumento = normalizeTipoDocumento(data['tipo_documento'] ?? 'DNI');
+
+  const apellidosRes = resolveApellidos(
+    data['apellido_paterno'] ?? '',
+    data['apellido_materno'] ?? '',
+    data['apellidos'] ?? '',
+  );
 
   const apoderadoFull = data['apoderado_nombres']?.trim() ?? '';
   let apoderadoNombres = apoderadoFull;
-  let apoderadoApellidos = data['apoderado_apellidos']?.trim() ?? '';
-  if (apoderadoFull && !apoderadoApellidos) {
+  const apoderadoApellidosRes = resolveApellidos(
+    data['apoderado_apellido_paterno'] ?? '',
+    data['apoderado_apellido_materno'] ?? '',
+    data['apoderado_apellidos'] ?? '',
+  );
+  if (apoderadoFull && !apoderadoApellidosRes.apellidos) {
     const split = splitNombreCompleto(apoderadoFull);
     apoderadoNombres = split.nombres;
-    apoderadoApellidos = split.apellidos;
   }
 
   return validarFila({
     fila,
     nombres: nombres.trim(),
-    apellidos: apellidos.trim(),
+    apellidos: apellidosRes.apellidos,
+    apellidoPaterno: apellidosRes.apellidoPaterno,
+    apellidoMaterno: apellidosRes.apellidoMaterno,
+    tipoDocumento,
     dni: dni.trim(),
     email:
       (data['email'] ?? '').trim() ||
-      (dni ? buildEmail(nombres, apellidos, dni) : ''),
+      (dni ? buildEmail(nombres, apellidosRes.apellidos, dni) : ''),
     sexo: sexoRaw || undefined,
     fechaNac: data['fecha_nac']?.trim() || undefined,
+    direccion: (data['direccion'] ?? '').trim(),
+    distrito: data['distrito']?.trim() || undefined,
+    provincia: data['provincia']?.trim() || undefined,
+    departamento: data['departamento']?.trim() || undefined,
+    telefonoEmergencia: data['telefono_emergencia']?.trim() || undefined,
     nivel: (nivel || '') as Nivel,
     grado: normalizeGrado(data['grado'] ?? ''),
     seccion: (data['seccion'] ?? 'A').trim().toUpperCase(),
     anioIngreso: data['anio_ingreso']?.trim() || String(new Date().getFullYear()),
     apoderadoNombres: apoderadoNombres || undefined,
-    apoderadoApellidos: apoderadoApellidos || undefined,
+    apoderadoApellidos: apoderadoApellidosRes.apellidos || undefined,
+    apoderadoApellidoPaterno: apoderadoApellidosRes.apellidoPaterno || undefined,
+    apoderadoApellidoMaterno: apoderadoApellidosRes.apellidoMaterno || undefined,
+    apoderadoTipoDocumento: data['apoderado_tipo_documento']?.trim()
+      ? normalizeTipoDocumento(data['apoderado_tipo_documento'])
+      : undefined,
     apoderadoDni: data['apoderado_dni']?.trim() || undefined,
     apoderadoTelefono: data['apoderado_telefono']?.trim() || undefined,
     apoderadoEmail: data['apoderado_email']?.trim() || undefined,
+    apoderadoParentesco: normalizeParentesco(data['apoderado_parentesco'] ?? ''),
   });
 }
 

@@ -9,12 +9,16 @@ import {
   Post,
   Query,
   Res,
+  UploadedFiles,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { AttendancesService } from './attendances.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
 import { CreateJustificationDto } from './dto/justification.dto';
 import { UpdateAlertSettingsDto } from './dto/alert-settings.dto';
+import { NotifyApoderadoDto } from './dto/notify-apoderado.dto';
 import { UpdateAttendanceDto } from './dto/update-attendance.dto';
 import { SaveDailyRegisterDto } from './dto/daily-register.dto';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
@@ -135,6 +139,12 @@ export class AttendancesController {
     });
   }
 
+  @Post('alerts/notify')
+  @RequirePermiso('asistencia.registrar', 'asistencia.editar')
+  notifyApoderado(@Body() dto: NotifyApoderadoDto) {
+    return this.attendancesService.notifyApoderado(dto);
+  }
+
   @Get('justifications/pending')
   findPending(
     @Query('nivel') nivel?: string,
@@ -162,8 +172,12 @@ export class AttendancesController {
 
   @Post('justifications')
   @RequirePermiso('asistencia.registrar', 'asistencia.editar')
-  createJustification(@Body() dto: CreateJustificationDto) {
-    return this.attendancesService.createJustification(dto);
+  @UseInterceptors(FilesInterceptor('adjuntos', 5))
+  createJustification(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() dto: CreateJustificationDto,
+  ) {
+    return this.attendancesService.createJustification(dto, files ?? []);
   }
 
   @Delete('justifications/:id')

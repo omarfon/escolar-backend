@@ -1,3 +1,4 @@
+/** Estudiantes demo asistencia — cargar con npm run db:demo-student-catalog o db:seed. La API solo lee BD. */
 export interface AsistenciaStudentSeed {
   nombre: string;
   apellido: string;

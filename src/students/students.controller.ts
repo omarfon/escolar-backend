@@ -27,6 +27,7 @@ import {
 } from './dto/expediente.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { BulkImportMatriculaDto } from './dto/bulk-import-students.dto';
+import { BulkImportHistorialDto } from './dto/bulk-import-historial.dto';
 import { StudentsService } from './students.service';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { RequireRole } from '../auth/decorators/require-role.decorator';
@@ -77,6 +78,38 @@ export class StudentsController {
       throw new BadRequestException('Debe enviar un archivo CSV o Excel');
     }
     return this.studentsService.bulkCreateFromFile(file.buffer, file.originalname);
+  }
+
+  @Post('bulk-historial-academico')
+  @RequirePermiso('estudiantes.editar', 'matricula.crear', 'matricula.ver')
+  bulkHistorialAcademico(@Body() dto: BulkImportHistorialDto) {
+    return this.studentsService.bulkImportHistorial(dto.filas);
+  }
+
+  @Post('bulk-historial-academico/preview')
+  @RequirePermiso('estudiantes.editar', 'matricula.crear', 'matricula.ver', 'estudiantes.ver')
+  @UseInterceptors(FileInterceptor('file'))
+  previewBulkHistorial(@UploadedFile() file: Express.Multer.File) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Debe enviar un archivo CSV o Excel');
+    }
+    return this.studentsService.previewBulkHistorialFromFile(
+      file.buffer,
+      file.originalname,
+    );
+  }
+
+  @Post('bulk-historial-academico/upload')
+  @RequirePermiso('estudiantes.editar', 'matricula.crear', 'matricula.ver')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadBulkHistorial(@UploadedFile() file: Express.Multer.File) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Debe enviar un archivo CSV o Excel');
+    }
+    return this.studentsService.bulkImportHistorialFromFile(
+      file.buffer,
+      file.originalname,
+    );
   }
 
   @Get('section-changes')
@@ -170,6 +203,11 @@ export class StudentsController {
   @Get()
   findAll(@Query('q') q?: string) {
     return this.studentsService.findAllExpedientes(q);
+  }
+
+  @Get('stats')
+  getStats() {
+    return this.studentsService.getStudentsStats();
   }
 
   @Get('export')

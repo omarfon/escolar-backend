@@ -4,6 +4,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import type { JustificacionAdjuntoMeta } from '../justifications-upload.util';
 
 @Entity('attendance_justifications')
 export class AttendanceJustification {
@@ -27,6 +28,9 @@ export class AttendanceJustification {
 
   @Column({ type: 'simple-json' })
   fechas: string[];
+
+  @Column({ type: 'simple-json', default: '[]' })
+  adjuntos: JustificacionAdjuntoMeta[];
 
   @Column({ length: 120, default: 'Administración' })
   registradoPor: string;

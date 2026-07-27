@@ -37,6 +37,8 @@ import { TemarioModule } from './temario/temario.module';
 import { TreasuryModule } from './treasury/treasury.module';
 import { GradingModule } from './grading/grading.module';
 import { PromediosModule } from './promedios/promedios.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { MailModule } from './mail/mail.module';
 import { DatabaseSeedService } from './database/database-seed.service';
 
 @Module({
@@ -103,6 +105,8 @@ import { DatabaseSeedService } from './database/database-seed.service';
     TreasuryModule,
     GradingModule,
     PromediosModule,
+    DashboardModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService, DatabaseSeedService],

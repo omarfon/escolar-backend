@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -8,6 +9,7 @@ import { In, Repository } from 'typeorm';
 import { AttendancesService } from '../attendances/attendances.service';
 import type {
   JustificationResponse,
+  ParentAbsenceAlertResponse,
   PendingJustificationResponse,
 } from '../attendances/attendances.service';
 import { CreateParentJustificationDto } from './dto/create-parent-justification.dto';
@@ -35,6 +37,7 @@ import { ParentTeacherMessage } from './entities/parent-teacher-message.entity';
 import { eventAppliesToChild } from './parent-events.util';
 import { GradingConfigService } from '../grading/grading-config.service';
 import { PromediosService } from '../promedios/promedios.service';
+import { MailService } from '../mail/mail.service';
 import type { CursoPromedio } from '../promedios/promedios.types';
 
 export interface HijoResumen {
@@ -122,6 +125,7 @@ export interface SeguimientoAcademico {
   promedioGeneral: number | null;
   nivelGeneral: string | null;
   asistencia: AsistenciaSeguimiento;
+  alertasAusentismo: ParentAbsenceAlertResponse[];
   tareasPendientes: number;
   tareasVencidas: number;
   tareasEntregadas: number;
@@ -174,6 +178,8 @@ export interface ParentTeacherMessageResponse {
 
 @Injectable()
 export class ParentsService {
+  private readonly logger = new Logger(ParentsService.name);
+
   constructor(
     @InjectRepository(ParentStudent)
     private readonly parentStudentsRepo: Repository<ParentStudent>,
@@ -193,6 +199,7 @@ export class ParentsService {
     private readonly treasuryService: TreasuryService,
     private readonly gradingConfigService: GradingConfigService,
     private readonly promediosService: PromediosService,
+    private readonly mailService: MailService,
   ) {}
 
   async getChildProfile(studentId: number, parentEmail: string) {
@@ -412,12 +419,6 @@ export class ParentsService {
       throw new BadRequestException('Asunto y mensaje son obligatorios');
     }
 
-    // Envío simulado: se registra en BD. Integrar SMTP (nodemailer) cuando haya config.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[correo-docente] De: ${email} → ${teacher.email} | ${asunto} | alumno: ${hijo.nombreCompleto}`,
-    );
-
     const saved = await this.messagesRepo.save(
       this.messagesRepo.create({
         parentEmail: email,
@@ -432,6 +433,23 @@ export class ParentsService {
         estado: 'enviado',
       }),
     );
+
+    try {
+      await this.mailService.sendParentToTeacherMessage({
+        teacherEmail: teacher.email,
+        teacherName: teacher.nombreCompleto,
+        parentEmail: email,
+        parentName: parentNombre?.trim() || email,
+        studentName: hijo.nombreCompleto,
+        subject: asunto,
+        body: cuerpo,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
+      this.logger.error(
+        `Mensaje guardado pero falló el correo al docente ${teacher.email}: ${message}`,
+      );
+    }
 
     return {
       id: saved.id,
@@ -583,6 +601,8 @@ export class ParentsService {
     const justificadas = attendances.filter(a => a.estado === 'J').length;
     const totalDias = attendances.length;
     const inasistenciasNetas = Math.max(faltas - justificadas, 0);
+    const alertasAusentismo =
+      await this.attendancesService.findParentAbsenceAlerts(studentId);
 
     return {
       estudiante: this.toHijoResumen(student, parentesco),
@@ -610,6 +630,7 @@ export class ParentsService {
             observacion: a.observacion,
           })),
       },
+      alertasAusentismo,
       tareasPendientes: tasks.filter(t => t.estado === 'PENDING').length,
       tareasVencidas: tasks.filter(t => t.estado === 'OVERDUE').length,
       tareasEntregadas: tasks.filter(t => t.estado === 'SUBMITTED').length,
@@ -666,6 +687,15 @@ export class ParentsService {
     return this.attendancesService.findPending({ studentId, mes });
   }
 
+  async markAbsenceAlertRead(
+    studentId: number,
+    parentEmail: string,
+    alertId: number,
+  ): Promise<ParentAbsenceAlertResponse> {
+    await this.assertParentLink(studentId, parentEmail);
+    return this.attendancesService.markParentAbsenceAlertRead(studentId, alertId);
+  }
+
   async getJustifications(
     studentId: number,
     parentEmail: string,
@@ -679,6 +709,7 @@ export class ParentsService {
     studentId: number,
     parentEmail: string,
     dto: CreateParentJustificationDto,
+    files: Express.Multer.File[] = [],
   ): Promise<JustificationResponse> {
     const link = await this.assertParentLink(studentId, parentEmail);
     const student = await this.studentsService.findOne(studentId);
@@ -686,11 +717,13 @@ export class ParentsService {
 
     return this.attendancesService.createJustification({
       studentId,
-      cantidad: dto.cantidad,
+      cantidad: dto.attendanceIds?.length ?? dto.cantidad,
       motivo: dto.motivo,
       observacion: dto.observacion,
       registradoPor,
-    });
+      mes: dto.mes,
+      attendanceIds: dto.attendanceIds,
+    }, files);
   }
 
   private async assertParentLink(

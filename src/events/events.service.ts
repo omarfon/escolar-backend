@@ -1,7 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MAESTRO_EVENTOS_SEED } from '../maestros/eventos/eventos-seed.data';
 import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
 import {
   Evento,
@@ -85,15 +84,6 @@ export class EventsService {
     estado?: string;
     busqueda?: string;
   }): Promise<EventResponse[]> {
-    if ((await this.eventsRepo.count()) === 0) {
-      await this.eventsRepo.save(
-        MAESTRO_EVENTOS_SEED.map((e) => {
-          const estado = computeEstadoFromDates(e.fechaInicio, e.fechaFin);
-          return this.eventsRepo.create({ ...e, estado, cancelado: false });
-        }),
-      );
-    }
-
     await this.syncEstadosLegacy();
 
     const qb = this.eventsRepo

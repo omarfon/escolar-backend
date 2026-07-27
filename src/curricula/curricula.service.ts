@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
@@ -100,6 +101,8 @@ const GRADOS_POR_NIVEL: Record<string, string[]> = {
 
 @Injectable()
 export class CurriculaService implements OnModuleInit {
+  private readonly logger = new Logger(CurriculaService.name);
+
   constructor(
     @InjectRepository(Curriculum)
     private readonly curriculumRepo: Repository<Curriculum>,
@@ -127,6 +130,9 @@ export class CurriculaService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     await resetCurriculaIdSequences(this.dataSource);
     await this.ensureCurriculumLinks();
+    await this.ensureActiveCurriculumBundles();
+    await this.ensureMaestroCursoLinks();
+    await this.syncMineduCompetencias();
   }
 
   /** Asigna curriculumId a áreas/cursos existentes (migración de datos previos). */
@@ -181,8 +187,42 @@ export class CurriculaService implements OnModuleInit {
   /** Siembra currícula demo y competencias MINEDU (solo si tablas vacías). */
   async seedCatalogBundle(): Promise<void> {
     await this.seedIfEmpty();
+    await this.ensureActiveCurriculumBundles();
     await this.ensureMaestroCursoLinks();
     await this.syncMineduCompetencias();
+  }
+
+  /** Garantiza malla y competencias en currículas activas sin cursos o sin competencias. */
+  private async ensureActiveCurriculumBundles(): Promise<void> {
+    const activas = await this.curriculumRepo.find({ where: { estado: 'activo' } });
+    for (const curr of activas) {
+      const subjectCount = await this.subjectRepo.count({
+        where: { curriculumId: curr.id, activo: true },
+      });
+      if (subjectCount === 0) {
+        this.logger.log(
+          `Siembra de malla MINEDU para currícula activa ${curr.id} (${curr.nivel} ${curr.anio})`,
+        );
+        await this.seedBundleForCurriculum(curr.id, curr.nivel);
+        continue;
+      }
+
+      const subjects = await this.subjectRepo.find({
+        where: { curriculumId: curr.id, activo: true },
+        select: { id: true },
+      });
+      const subjectIds = subjects.map((s) => s.id);
+      const compCount = subjectIds.length
+        ? await this.competenciaRepo.count({
+            where: { cursoId: In(subjectIds), activo: true },
+          })
+        : 0;
+      if (compCount === 0) {
+        this.logger.warn(
+          `Currícula ${curr.id} (${curr.nivel} ${curr.anio}) sin competencias — se sincronizarán desde MINEDU`,
+        );
+      }
+    }
   }
 
   private async seedBundleForCurriculum(
@@ -286,6 +326,9 @@ export class CurriculaService implements OnModuleInit {
             if (current === expected) continue;
             await this.clearCompetenciasForSubject(sub.id);
             await this.applyMineduToSubject(sub.id, key);
+            this.logger.log(
+              `Competencias MINEDU aplicadas: ${sub.nombre} (${curr.nivel} ${curr.anio}) → ${expected}`,
+            );
           } catch (err) {
             console.warn(
               `[curricula] sync MINEDU omitido para curso ${sub.id} (${sub.nombre}):`,
@@ -783,6 +826,15 @@ export class CurriculaService implements OnModuleInit {
           'El curso maestro no corresponde al nivel de la currícula',
         );
       }
+
+      const existingSubject = await this.subjectRepo.findOne({
+        where: { curriculumId: dto.curriculumId, maestroCursoId, activo: true },
+      });
+      if (existingSubject) {
+        throw new BadRequestException(
+          'Este curso del catálogo maestro ya está registrado en esta currícula',
+        );
+      }
     } else {
       throw new BadRequestException(
         'Debe seleccionar un curso del catálogo maestro (maestroCursoId)',
@@ -1008,6 +1060,13 @@ export class CurriculaService implements OnModuleInit {
 
       if (!subject) continue;
 
+      if (subject.curriculumId !== curriculumId) {
+        subject.curriculumId = curriculumId;
+        subject = await this.subjectRepo.save(subject);
+      }
+
+      subject = await this.syncSubjectGradosFromMaestro(subject);
+
       items.push({
         id: subject.id,
         curriculumId,
@@ -1016,7 +1075,7 @@ export class CurriculaService implements OnModuleInit {
         area: m.area,
         areaId: subject.areaId,
         nivel: m.nivel,
-        grados: [...m.grados],
+        grados: [...subject.grados],
         horasSemanales: m.horasSemanales,
       });
     }
@@ -1028,21 +1087,52 @@ export class CurriculaService implements OnModuleInit {
     dto: CreateTeacherAssignmentDto,
   ): Promise<CurriculumTeacherAssignment> {
     await this.getCurriculumOrFail(dto.curriculumId);
-    const subject = await this.getSubjectOrFail(dto.cursoId);
-    if (subject.curriculumId !== dto.curriculumId) {
-      throw new BadRequestException('El curso no pertenece a esta currícula');
+    let subject = await this.syncSubjectGradosFromMaestro(
+      await this.getSubjectOrFail(dto.cursoId),
+    );
+
+    if (subject.curriculumId != null && subject.curriculumId !== dto.curriculumId) {
+      subject.curriculumId = dto.curriculumId;
+      subject = await this.subjectRepo.save(subject);
     }
-    if (!subject.grados.includes(dto.grado)) {
+
+    const gradoCanonico = this.resolveGradoCanonico(dto.grado, subject.grados);
+    if (!this.gradosIncluyen(gradoCanonico, subject.grados)) {
       throw new BadRequestException(
         `El curso no está disponible para el grado ${dto.grado}`,
       );
     }
 
     const docente = await this.getDocenteOrFail(dto.docenteId);
-    await this.assertUniqueAssignment(
+    const seccionesNorm = dto.secciones.map((s) => s.trim().toUpperCase());
+
+    const existingSameDocente = await this.findActiveAssignmentForDocente(
       dto.curriculumId,
       dto.cursoId,
-      dto.grado,
+      gradoCanonico,
+      docente.id,
+    );
+    if (existingSameDocente) {
+      const merged = [
+        ...new Set([
+          ...(existingSameDocente.secciones ?? []).map((s) => s.toUpperCase()),
+          ...seccionesNorm,
+        ]),
+      ];
+      return this.updateAssignment(existingSameDocente.id, {
+        docenteId: dto.docenteId,
+        nivel: dto.nivel,
+        grado: gradoCanonico,
+        secciones: merged,
+        horasSemanales: dto.horasSemanales,
+      });
+    }
+
+    await this.assertNoSectionConflict(
+      dto.curriculumId,
+      dto.cursoId,
+      gradoCanonico,
+      seccionesNorm,
     );
 
     const horas =
@@ -1055,8 +1145,8 @@ export class CurriculaService implements OnModuleInit {
         docenteNombre: `${docente.nombres} ${docente.apellidos}`.trim(),
         cursoId: dto.cursoId,
         nivel: dto.nivel,
-        grado: dto.grado,
-        secciones: dto.secciones,
+        grado: gradoCanonico,
+        secciones: seccionesNorm,
         horasSemanales: horas,
         activo: dto.activo ?? true,
       }),
@@ -1073,16 +1163,26 @@ export class CurriculaService implements OnModuleInit {
     const grado = dto.grado ?? current.grado;
 
     if (dto.cursoId != null || dto.grado != null) {
-      const subject = await this.getSubjectOrFail(cursoId);
-      if (subject.curriculumId !== curriculumId) {
+      let subject = await this.syncSubjectGradosFromMaestro(
+        await this.getSubjectOrFail(cursoId),
+      );
+      if (subject.curriculumId != null && subject.curriculumId !== curriculumId) {
         throw new BadRequestException('El curso no pertenece a esta currícula');
       }
-      if (!subject.grados.includes(grado)) {
+      const gradoCanonico = this.resolveGradoCanonico(grado, subject.grados);
+      if (!this.gradosIncluyen(gradoCanonico, subject.grados)) {
         throw new BadRequestException(
           `El curso no está disponible para el grado ${grado}`,
         );
       }
-      await this.assertUniqueAssignment(curriculumId, cursoId, grado, id);
+      await this.assertNoSectionConflict(
+        curriculumId,
+        cursoId,
+        gradoCanonico,
+        dto.secciones?.map((s) => s.trim().toUpperCase()) ?? current.secciones,
+        id,
+      );
+      current.grado = gradoCanonico;
     }
 
     if (dto.docenteId != null) {
@@ -1093,8 +1193,17 @@ export class CurriculaService implements OnModuleInit {
 
     if (dto.cursoId != null) current.cursoId = dto.cursoId;
     if (dto.nivel != null) current.nivel = dto.nivel;
-    if (dto.grado != null) current.grado = dto.grado;
-    if (dto.secciones != null) current.secciones = dto.secciones;
+    if (dto.secciones != null) {
+      const seccionesNorm = dto.secciones.map((s) => s.trim().toUpperCase());
+      await this.assertNoSectionConflict(
+        curriculumId,
+        cursoId,
+        current.grado,
+        seccionesNorm,
+        id,
+      );
+      current.secciones = seccionesNorm;
+    }
     if (dto.activo != null) current.activo = dto.activo;
 
     if (dto.horasSemanales != null) {
@@ -1158,20 +1267,94 @@ export class CurriculaService implements OnModuleInit {
     return subject;
   }
 
-  private async assertUniqueAssignment(
+  private async findActiveAssignmentForDocente(
     curriculumId: number,
     cursoId: number,
     grado: string,
+    docenteId: number,
+  ): Promise<CurriculumTeacherAssignment | null> {
+    const gradoKey = this.gradoAsignacionKey(grado);
+    const rows = await this.assignmentRepo.find({
+      where: { curriculumId, cursoId, docenteId, activo: true },
+    });
+    return (
+      rows.find((row) => this.gradoAsignacionKey(row.grado) === gradoKey) ?? null
+    );
+  }
+
+  private async assertNoSectionConflict(
+    curriculumId: number,
+    cursoId: number,
+    grado: string,
+    secciones: string[],
     excludeId?: number,
   ): Promise<void> {
-    const existing = await this.assignmentRepo.findOne({
-      where: { curriculumId, cursoId, grado, activo: true },
+    const gradoKey = this.gradoAsignacionKey(grado);
+    const newSecs = new Set(secciones.map((s) => s.trim().toUpperCase()));
+    const rows = await this.assignmentRepo.find({
+      where: { curriculumId, cursoId, activo: true },
     });
-    if (existing && existing.id !== excludeId) {
-      throw new BadRequestException(
-        'Ya existe una asignación activa para este curso y grado',
-      );
+    for (const row of rows) {
+      if (excludeId != null && row.id === excludeId) continue;
+      if (this.gradoAsignacionKey(row.grado) !== gradoKey) continue;
+      for (const sec of row.secciones ?? []) {
+        const normalized = sec.trim().toUpperCase();
+        if (newSecs.has(normalized)) {
+          throw new BadRequestException(
+            `La sección ${normalized} ya está asignada a ${row.docenteNombre} en este curso y grado`,
+          );
+        }
+      }
     }
+  }
+
+  private gradoAsignacionKey(grado: string): string {
+    const t = grado.trim().toLowerCase();
+    if (t.includes('año') || t.includes('anos')) {
+      return t.replace(/\s+/g, ' ');
+    }
+    return normalizeGradoMatricula(grado).toLowerCase();
+  }
+
+  private gradosIncluyen(grado: string, grados: string[]): boolean {
+    const key = this.gradoAsignacionKey(grado);
+    return grados.some((g) => this.gradoAsignacionKey(g) === key);
+  }
+
+  private resolveGradoCanonico(grado: string, grados: string[]): string {
+    const key = this.gradoAsignacionKey(grado);
+    const match = grados.find((g) => this.gradoAsignacionKey(g) === key);
+    if (match) return match;
+    const t = grado.trim().toLowerCase();
+    if (t.includes('año') || t.includes('anos')) return grado.trim();
+    return normalizeGradoMatricula(grado);
+  }
+
+  private async syncSubjectGradosFromMaestro(
+    subject: CurriculumSubject,
+  ): Promise<CurriculumSubject> {
+    if (!subject.maestroCursoId) return subject;
+    const maestro = await this.maestroCursoRepo.findOneBy({
+      id: subject.maestroCursoId,
+      activo: true,
+    });
+    if (!maestro?.grados?.length) return subject;
+
+    const maestroKeys = maestro.grados.map((g) => this.gradoAsignacionKey(g));
+    const subjectKeys = (subject.grados ?? []).map((g) =>
+      this.gradoAsignacionKey(g),
+    );
+    const needsSync =
+      maestroKeys.length !== subjectKeys.length ||
+      maestroKeys.some((k) => !subjectKeys.includes(k));
+
+    if (!needsSync) return subject;
+
+    subject.grados = [...maestro.grados];
+    if (subject.horasSemanales <= 0 && maestro.horasSemanales > 0) {
+      subject.horasSemanales = maestro.horasSemanales;
+    }
+    return this.subjectRepo.save(subject);
   }
 
   /** Enlaza curriculum subjects existentes con maestros_cursos por (nivel, nombre). */

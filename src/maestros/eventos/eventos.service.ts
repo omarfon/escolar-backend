@@ -72,10 +72,6 @@ export class EventosMaestrosService {
     estado?: string;
     busqueda?: string;
   }): Promise<MaestroEventoResponse[]> {
-    if ((await this.eventoRepo.count()) === 0) {
-      await this.seedCatalogIfEmpty();
-    }
-
     await this.syncEstadosLegacy();
 
     const qb = this.eventoRepo

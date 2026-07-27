@@ -1,3 +1,4 @@
+/** Documentos matrícula demo — cargar con npm run db:student-documents o db:demo-student-catalog. La API solo lee BD. */
 import { DocumentoEstado } from '../students/entities/student-document.entity';
 
 export interface StudentDocumentSeedRow {

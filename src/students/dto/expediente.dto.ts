@@ -23,7 +23,22 @@ export class RepresentanteDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(8)
+  @MaxLength(80)
+  apellidoPaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apellidoMaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  tipoDocumento?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
   dni?: string;
 
   @IsOptional()
@@ -102,13 +117,28 @@ export class CreateExpedienteDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  apellidoPaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apellidoMaterno?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(20)
   codigo?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(8)
+  @MaxLength(20)
   dni?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  tipoDocumento?: string;
 
   @IsEmail()
   @MaxLength(120)
@@ -125,6 +155,26 @@ export class CreateExpedienteDto {
   @IsOptional()
   @IsString()
   direccion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  distrito?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  provincia?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  departamento?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  telefonoEmergencia?: string;
 
   @IsOptional()
   @IsString()
@@ -209,13 +259,28 @@ export class UpdateExpedienteDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  apellidoPaterno?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  apellidoMaterno?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(20)
   codigo?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(8)
+  @MaxLength(20)
   dni?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  tipoDocumento?: string;
 
   @IsOptional()
   @IsEmail()
@@ -233,6 +298,26 @@ export class UpdateExpedienteDto {
   @IsOptional()
   @IsString()
   direccion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  distrito?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  provincia?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  departamento?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  telefonoEmergencia?: string;
 
   @IsOptional()
   @IsString()

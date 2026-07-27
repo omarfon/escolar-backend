@@ -2,10 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Student } from '../students/entities/student.entity';
+import { MailService } from '../mail/mail.service';
 import {
   CreateConductIncidentDto,
   UpdateConductIncidentDto,
@@ -32,11 +34,14 @@ export interface ConductIncidentFilters {
 
 @Injectable()
 export class ConductIncidentsService {
+  private readonly logger = new Logger(ConductIncidentsService.name);
+
   constructor(
     @InjectRepository(ConductIncident)
     private readonly incidentRepo: Repository<ConductIncident>,
     @InjectRepository(Student)
     private readonly studentRepo: Repository<Student>,
+    private readonly mailService: MailService,
   ) {}
 
   async create(dto: CreateConductIncidentDto): Promise<ConductIncidentResponse> {
@@ -54,6 +59,9 @@ export class ConductIncidentsService {
       observaciones: dto.observaciones?.trim() ?? '',
     });
     const saved = await this.incidentRepo.save(entity);
+    if (saved.notificadoPadre) {
+      await this.notifyParentIfNeeded(student, saved, false);
+    }
     return toConductIncidentResponse(saved, student);
   }
 
@@ -189,6 +197,8 @@ export class ConductIncidentsService {
       current.studentId = dto.studentId;
     }
 
+    const wasNotified = current.notificadoPadre;
+
     if (dto.tipo !== undefined) current.tipo = dto.tipo;
     if (dto.descripcion !== undefined) {
       current.descripcion = dto.descripcion.trim();
@@ -210,7 +220,26 @@ export class ConductIncidentsService {
     }
 
     const saved = await this.incidentRepo.save(current);
+    if (saved.notificadoPadre && !wasNotified && student) {
+      await this.notifyParentIfNeeded(student, saved, wasNotified);
+    }
     return toConductIncidentResponse(saved, student);
+  }
+
+  private async notifyParentIfNeeded(
+    student: Student,
+    incident: ConductIncident,
+    wasNotified: boolean,
+  ) {
+    if (wasNotified) return;
+    try {
+      await this.mailService.sendConductParentNotification(student, incident);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
+      this.logger.error(
+        `No se pudo enviar correo de conducta (incidente ${incident.id}): ${message}`,
+      );
+    }
   }
 
   async remove(id: number) {

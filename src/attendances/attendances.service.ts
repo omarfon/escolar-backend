@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -11,6 +12,7 @@ import { CreateJustificationDto } from './dto/justification.dto';
 import { UpdateAlertSettingsDto } from './dto/alert-settings.dto';
 import { UpdateAttendanceDto } from './dto/update-attendance.dto';
 import { AttendanceAlertSettings } from './entities/attendance-alert-settings.entity';
+import { AttendanceAlertNotification } from './entities/attendance-alert-notification.entity';
 import { AttendanceJustification } from './entities/attendance-justification.entity';
 import { Attendance } from './entities/attendance.entity';
 import {
@@ -21,9 +23,17 @@ import {
 } from '../maestros/feriados/feriados.service';
 import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import { SaveDailyRegisterDto } from './dto/daily-register.dto';
+import { NotifyApoderadoDto } from './dto/notify-apoderado.dto';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 import { gradoLabelFromParts } from '../students/students.mapper';
 import { Student } from '../students/entities/student.entity';
+import {
+  JustificacionAdjuntoMeta,
+  saveJustificationFiles,
+} from './justifications-upload.util';
+import { existsSync, unlinkSync } from 'fs';
+import { join, sep } from 'path';
+import { MailService } from '../mail/mail.service';
 
 export interface DailyRegisterRowResponse {
   studentId: number;
@@ -106,8 +116,17 @@ export interface JustificationResponse {
   motivo: string;
   observacion: string;
   fechas: string[];
+  attendanceIds: number[];
+  adjuntos: JustificacionAdjuntoMeta[];
   registradoPor: string;
   fechaRegistro: string;
+}
+
+export interface FaltaPendienteDetalle {
+  id: number;
+  fecha: string;
+  fechaLabel: string;
+  observacion?: string;
 }
 
 export interface PendingJustificationResponse {
@@ -120,6 +139,7 @@ export interface PendingJustificationResponse {
   faltasJustificadas: number;
   totalFaltas: number;
   ultimaFalta: string | null;
+  faltasPendientes: FaltaPendienteDetalle[];
 }
 
 export interface AlertSettingsResponse {
@@ -137,8 +157,50 @@ export interface AbsenceAlertResponse {
   faltasJustificadas: number;
   diasConsecutivos: number;
   ultimaFalta: string | null;
-  nivelAlerta: 'alerta' | 'critico';
+  nivelAlerta: 'normal' | 'alerta' | 'critico';
   motivoAlerta: string;
+  /** Total de registros de asistencia en el periodo consultado (tabla attendances). */
+  totalRegistrosBd: number;
+  /** Fechas ISO (YYYY-MM-DD) de faltas injustificadas registradas en BD. */
+  fechasInasistencia: string[];
+  apoderadoNotificado: boolean;
+  notificadoAt: string | null;
+  notificadoPor: string | null;
+}
+
+export interface ParentAbsenceAlertResponse {
+  id: number;
+  mes: string;
+  mesLabel: string;
+  faltasInjustificadas: number;
+  diasConsecutivos: number;
+  nivelAlerta: string;
+  motivoAlerta: string;
+  notificadoAt: string;
+  notificadoPor: string;
+  correoEnviado: boolean;
+  leidoEnPortal: boolean;
+}
+
+export interface NotifyApoderadoResult {
+  studentId: number;
+  mes: string;
+  apoderadoNotificado: boolean;
+  notificadoAt: string;
+  notificadoPor: string;
+  correoEnviado: boolean;
+  correoDestino: string | null;
+  correoSimulado: boolean;
+  previewUrl?: string;
+}
+
+export interface AbsenceAlertsResumen {
+  totalAlumnos: number;
+  alumnosConFaltasInjustificadas: number;
+  totalFaltasInjustificadas: number;
+  totalRegistrosAsistencia: number;
+  alumnosEnAlerta: number;
+  alumnosEnCritico: number;
 }
 
 export interface ControlReportDiaEscolar {
@@ -195,6 +257,8 @@ export interface ControlReportResponse {
 
 @Injectable()
 export class AttendancesService {
+  private readonly logger = new Logger(AttendancesService.name);
+
   constructor(
     @InjectRepository(Attendance)
     private readonly attendancesRepository: Repository<Attendance>,
@@ -202,9 +266,12 @@ export class AttendancesService {
     private readonly justificationRepository: Repository<AttendanceJustification>,
     @InjectRepository(AttendanceAlertSettings)
     private readonly alertSettingsRepository: Repository<AttendanceAlertSettings>,
+    @InjectRepository(AttendanceAlertNotification)
+    private readonly alertNotificationRepository: Repository<AttendanceAlertNotification>,
     private readonly studentsService: StudentsService,
     private readonly feriadosService: FeriadosMaestrosService,
     private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly mailService: MailService,
   ) {}
 
   async getDailyRegister(query: {
@@ -525,9 +592,19 @@ export class AttendancesService {
     busqueda?: string;
     studentId?: number;
   }): Promise<JustificationResponse[]> {
-    const rows = await this.justificationRepository.find({
+    let rows = await this.justificationRepository.find({
       order: { createdAt: 'DESC' },
     });
+
+    if (query?.studentId) {
+      rows = rows.filter((r) => r.studentId === query.studentId);
+    }
+    if (query?.mes?.trim()) {
+      const mesKey = query.mes.slice(0, 7);
+      rows = rows.filter((r) =>
+        r.fechas.some((f) => this.normalizeFechaKey(f).startsWith(mesKey)),
+      );
+    }
 
     const students = await this.studentsService.findAll();
     const studentMap = new Map(students.map((s) => [s.id, s]));
@@ -547,6 +624,8 @@ export class AttendancesService {
         motivo: row.motivo,
         observacion: row.observacion,
         fechas: row.fechas.map((f) => this.formatDate(f)),
+        attendanceIds: row.attendanceIds ?? [],
+        adjuntos: row.adjuntos ?? [],
         registradoPor: row.registradoPor,
         fechaRegistro: this.formatDateTime(row.createdAt),
       };
@@ -556,11 +635,9 @@ export class AttendancesService {
       result = result.filter((r) => r.nivel === query.nivel);
     }
     if (query?.grado) {
-      result = result.filter((r) => r.grado === query.grado);
-    }
-    if (query?.mes) {
-      result = result.filter((r) =>
-        rowMatchesMonth(r.fechas, query.mes!),
+      const gradoNorm = normalizeGradoMatricula(query.grado);
+      result = result.filter(
+        (r) => normalizeGradoMatricula(r.grado) === gradoNorm,
       );
     }
     if (query?.busqueda?.trim()) {
@@ -570,9 +647,6 @@ export class AttendancesService {
           r.estudiante.toLowerCase().includes(q) ||
           r.motivo.toLowerCase().includes(q),
       );
-    }
-    if (query?.studentId) {
-      result = result.filter((r) => r.studentId === query.studentId);
     }
 
     return result;
@@ -585,36 +659,29 @@ export class AttendancesService {
     busqueda?: string;
     studentId?: number;
   }): Promise<PendingJustificationResponse[]> {
-    const students = await this.studentsService.findAll();
-    let filtered = students.filter((s) => s.activo);
-
+    let students = await this.filterStudentsForControl(query);
     if (query?.studentId) {
-      filtered = filtered.filter((s) => s.id === query.studentId);
+      students = students.filter((s) => s.id === query.studentId);
     }
 
-    if (query?.nivel) filtered = filtered.filter((s) => s.nivel === query.nivel);
-    if (query?.grado) filtered = filtered.filter((s) => s.grado === query.grado);
-    if (query?.busqueda?.trim()) {
-      const q = query.busqueda.trim().toLowerCase();
-      filtered = filtered.filter((s) =>
-        `${s.apellido} ${s.nombre} ${s.grado} ${s.nivel}`
-          .toLowerCase()
-          .includes(q),
-      );
-    }
+    const studentIds = students.map((s) => s.id);
+    const mesBounds = query?.mes?.trim()
+      ? this.resolveMesBounds(query.mes)
+      : null;
+    const byStudent = await this.loadAttendancesByStudents(
+      studentIds,
+      mesBounds?.desde,
+      mesBounds?.hasta,
+    );
 
     const result: PendingJustificationResponse[] = [];
 
-    for (const student of filtered) {
-      const attendances = await this.getStudentAttendances(student.id, query?.mes);
-      const faltasSinJustificar = attendances.filter((a) => a.estado === 'F').length;
-      const faltasJustificadas = attendances.filter((a) => a.estado === 'J').length;
+    for (const student of students) {
+      const records = byStudent.get(student.id) ?? [];
+      const stats = this.computeAbsenceStats(records);
+      if (stats.faltasInjustificadas === 0) continue;
 
-      if (faltasSinJustificar === 0) continue;
-
-      const ultimaFalta = attendances
-        .filter((a) => a.estado === 'F')
-        .sort((a, b) => b.fecha.localeCompare(a.fecha))[0]?.fecha;
+      const faltasPendientes = this.mapPendingAbsenceDetails(records);
 
       result.push({
         studentId: student.id,
@@ -622,10 +689,11 @@ export class AttendancesService {
         nivel: student.nivel,
         grado: student.grado,
         seccion: student.seccion,
-        faltasSinJustificar,
-        faltasJustificadas,
-        totalFaltas: faltasSinJustificar + faltasJustificadas,
-        ultimaFalta: ultimaFalta ? this.formatDate(ultimaFalta) : null,
+        faltasSinJustificar: stats.faltasInjustificadas,
+        faltasJustificadas: stats.faltasJustificadas,
+        totalFaltas: stats.faltasInjustificadas + stats.faltasJustificadas,
+        ultimaFalta: stats.ultimaFalta,
+        faltasPendientes,
       });
     }
 
@@ -671,86 +739,300 @@ export class AttendancesService {
     mes?: string;
     busqueda?: string;
     soloCriticos?: boolean;
-  }): Promise<{ settings: AlertSettingsResponse; alerts: AbsenceAlertResponse[] }> {
+  }): Promise<{
+    settings: AlertSettingsResponse;
+    alerts: AbsenceAlertResponse[];
+    conFaltas: AbsenceAlertResponse[];
+    resumen: AbsenceAlertsResumen;
+    mes: string | null;
+    mesLabel: string | null;
+  }> {
     const settings = await this.getAlertSettings();
-    const students = await this.studentsService.findAll();
-    let filtered = students.filter((s) => s.activo);
+    const hoy = this.todayIso();
+    const mesKey = query?.mes?.trim()
+      ? query.mes.slice(0, 7)
+      : hoy.slice(0, 7);
+    const mesBounds = this.resolveMesBounds(mesKey);
 
-    if (query?.nivel) filtered = filtered.filter((s) => s.nivel === query.nivel);
-    if (query?.grado) filtered = filtered.filter((s) => s.grado === query.grado);
-    if (query?.busqueda?.trim()) {
-      const q = query.busqueda.trim().toLowerCase();
-      filtered = filtered.filter((s) =>
-        `${s.apellido} ${s.nombre} ${s.grado} ${s.nivel}`
-          .toLowerCase()
-          .includes(q),
+    const students = await this.filterStudentsForControl(query);
+    const studentIds = students.map((s) => s.id);
+    const byStudent = await this.loadAttendancesByStudents(
+      studentIds,
+      mesBounds.desde,
+      mesBounds.hasta,
+    );
+    const notificationMap = await this.loadAlertNotificationMap(studentIds, mesKey);
+
+    const conFaltas: AbsenceAlertResponse[] = [];
+    let totalFaltasInjustificadas = 0;
+    let totalRegistrosAsistencia = 0;
+
+    for (const student of students) {
+      const stats = this.computeAbsenceStats(byStudent.get(student.id) ?? []);
+      totalRegistrosAsistencia += stats.totalRegistrosBd;
+      if (stats.faltasInjustificadas === 0) continue;
+
+      totalFaltasInjustificadas += stats.faltasInjustificadas;
+      const nivelAlerta = this.resolveAbsenceAlertLevel(
+        stats.faltasInjustificadas,
+        stats.diasConsecutivos,
+        settings,
+      );
+
+      conFaltas.push(
+        this.buildAbsenceAlertRow(student, stats, settings, notificationMap),
       );
     }
 
-    const alerts: AbsenceAlertResponse[] = [];
-
-    for (const student of filtered) {
-      const attendances = await this.getStudentAttendances(student.id, query?.mes);
-      const faltasInjustificadas = attendances.filter((a) => a.estado === 'F').length;
-      const faltasJustificadas = attendances.filter((a) => a.estado === 'J').length;
-
-      const fechasFaltas = attendances
-        .filter((a) => a.estado === 'F')
-        .map((a) => a.fecha)
-        .sort();
-      const diasConsecutivos = calcMaxConsecutiveDays(fechasFaltas);
-
-      const superaAlerta =
-        faltasInjustificadas > settings.diasAlertaAusentismo ||
-        diasConsecutivos > settings.diasAlertaAusentismo;
-      if (!superaAlerta) continue;
-
-      const esCritico =
-        faltasInjustificadas > settings.diasAlertaCritica ||
-        diasConsecutivos > settings.diasAlertaCritica;
-      const nivelAlerta = esCritico ? 'critico' : 'alerta';
-
-      if (query?.soloCriticos && nivelAlerta !== 'critico') continue;
-
-      const ultimaFalta = fechasFaltas.length
-        ? this.formatDate(fechasFaltas[fechasFaltas.length - 1])
-        : null;
-
-      const motivos: string[] = [];
-      if (faltasInjustificadas > settings.diasAlertaAusentismo) {
-        motivos.push(`${faltasInjustificadas} faltas injustificadas`);
-      }
-      if (diasConsecutivos > settings.diasAlertaAusentismo) {
-        motivos.push(`${diasConsecutivos} dias consecutivos`);
-      }
-
-      alerts.push({
-        studentId: student.id,
-        estudiante: `${student.apellido}, ${student.nombre}`,
-        nivel: student.nivel,
-        grado: student.grado,
-        seccion: student.seccion,
-        faltasInjustificadas,
-        faltasJustificadas,
-        diasConsecutivos,
-        ultimaFalta,
-        nivelAlerta,
-        motivoAlerta: motivos.join(' · '),
-      });
-    }
-
-    alerts.sort((a, b) => {
-      if (a.nivelAlerta !== b.nivelAlerta) {
-        return a.nivelAlerta === 'critico' ? -1 : 1;
-      }
+    conFaltas.sort((a, b) => {
+      const rank = (n: AbsenceAlertResponse['nivelAlerta']) =>
+        n === 'critico' ? 0 : n === 'alerta' ? 1 : 2;
+      const diff = rank(a.nivelAlerta) - rank(b.nivelAlerta);
+      if (diff !== 0) return diff;
       return b.faltasInjustificadas - a.faltasInjustificadas;
     });
 
-    return { settings, alerts };
+    let alerts = conFaltas.filter((a) => a.nivelAlerta !== 'normal');
+    if (query?.soloCriticos) {
+      alerts = alerts.filter((a) => a.nivelAlerta === 'critico');
+    }
+
+    const resumen: AbsenceAlertsResumen = {
+      totalAlumnos: students.length,
+      alumnosConFaltasInjustificadas: conFaltas.length,
+      totalFaltasInjustificadas,
+      totalRegistrosAsistencia,
+      alumnosEnAlerta: conFaltas.filter((a) => a.nivelAlerta === 'alerta').length,
+      alumnosEnCritico: conFaltas.filter((a) => a.nivelAlerta === 'critico').length,
+    };
+
+    return {
+      settings,
+      alerts,
+      conFaltas,
+      resumen,
+      mes: mesKey,
+      mesLabel: this.formatMonthLabel(mesBounds.year, mesBounds.month),
+    };
+  }
+
+  async notifyApoderado(dto: NotifyApoderadoDto): Promise<NotifyApoderadoResult> {
+    const mesKey = dto.mes.slice(0, 7);
+    const students = await this.studentsService.findAll();
+    const student = students.find((s) => s.id === dto.studentId);
+    if (!student) {
+      throw new NotFoundException(`Estudiante ${dto.studentId} no encontrado`);
+    }
+
+    const mesBounds = this.resolveMesBounds(mesKey);
+    const mesLabel = this.formatMonthLabel(mesBounds.year, mesBounds.month);
+    const records = await this.loadAttendancesByStudents(
+      [dto.studentId],
+      mesBounds.desde,
+      mesBounds.hasta,
+    );
+    const stats = this.computeAbsenceStats(records.get(dto.studentId) ?? []);
+    if (stats.faltasInjustificadas === 0) {
+      throw new BadRequestException(
+        'No hay faltas injustificadas en BD para notificar en este mes',
+      );
+    }
+
+    const settings = await this.getAlertSettings();
+    const nivelAlerta = this.resolveAbsenceAlertLevel(
+      stats.faltasInjustificadas,
+      stats.diasConsecutivos,
+      settings,
+    );
+    const motivoAlerta = this.buildMotivoAlerta(stats, settings, nivelAlerta);
+    const notificadoPor = dto.notificadoPor?.trim() || 'Administración';
+    const parentEmail = this.mailService.resolveParentEmail(student);
+
+    let row = await this.alertNotificationRepository.findOne({
+      where: { studentId: dto.studentId, mes: mesKey },
+    });
+
+    const payload = {
+      studentId: dto.studentId,
+      mes: mesKey,
+      notificadoPor,
+      mesLabel,
+      faltasInjustificadas: stats.faltasInjustificadas,
+      diasConsecutivos: stats.diasConsecutivos,
+      nivelAlerta,
+      motivoAlerta,
+      correoDestino: parentEmail ?? '',
+      leidoEnPortal: false,
+    };
+
+    if (row) {
+      Object.assign(row, payload);
+      row = await this.alertNotificationRepository.save(row);
+    } else {
+      row = await this.alertNotificationRepository.save(
+        this.alertNotificationRepository.create(payload),
+      );
+    }
+
+    let correoEnviado = false;
+    let correoSimulado = false;
+    let previewUrl: string | undefined;
+
+    if (parentEmail) {
+      try {
+        const mailResult = await this.mailService.sendAbsenceAlertParentNotification({
+          student,
+          mesLabel,
+          faltasInjustificadas: stats.faltasInjustificadas,
+          diasConsecutivos: stats.diasConsecutivos,
+          nivelAlerta,
+          motivoAlerta,
+          fechasFaltas: stats.fechasFaltas.map((f) => this.formatFechaDisplay(f)),
+          notificadoPor,
+        });
+        if (mailResult) {
+          correoEnviado = mailResult.sent;
+          correoSimulado = mailResult.simulated;
+          previewUrl = mailResult.previewUrl;
+          row.correoEnviado = mailResult.sent;
+          row = await this.alertNotificationRepository.save(row);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error desconocido';
+        this.logger.error(
+          `No se pudo enviar correo de ausentismo (alumno ${dto.studentId}): ${message}`,
+        );
+      }
+    }
+
+    return {
+      studentId: dto.studentId,
+      mes: mesKey,
+      apoderadoNotificado: true,
+      notificadoAt: this.formatDateTime(row.notificadoAt),
+      notificadoPor: row.notificadoPor,
+      correoEnviado,
+      correoDestino: parentEmail,
+      correoSimulado,
+      previewUrl,
+    };
+  }
+
+  async findParentAbsenceAlerts(
+    studentId: number,
+  ): Promise<ParentAbsenceAlertResponse[]> {
+    const rows = await this.alertNotificationRepository.find({
+      where: { studentId },
+      order: { notificadoAt: 'DESC' },
+    });
+    return rows.map((row) => this.toParentAbsenceAlertResponse(row));
+  }
+
+  async markParentAbsenceAlertRead(
+    studentId: number,
+    alertId: number,
+  ): Promise<ParentAbsenceAlertResponse> {
+    const row = await this.alertNotificationRepository.findOne({
+      where: { id: alertId, studentId },
+    });
+    if (!row) {
+      throw new NotFoundException('Alerta de ausentismo no encontrada');
+    }
+    if (!row.leidoEnPortal) {
+      row.leidoEnPortal = true;
+      await this.alertNotificationRepository.save(row);
+    }
+    return this.toParentAbsenceAlertResponse(row);
+  }
+
+  private toParentAbsenceAlertResponse(
+    row: AttendanceAlertNotification,
+  ): ParentAbsenceAlertResponse {
+    return {
+      id: row.id,
+      mes: row.mes,
+      mesLabel: row.mesLabel || row.mes,
+      faltasInjustificadas: row.faltasInjustificadas,
+      diasConsecutivos: row.diasConsecutivos,
+      nivelAlerta: row.nivelAlerta,
+      motivoAlerta: row.motivoAlerta,
+      notificadoAt: this.formatDateTime(row.notificadoAt),
+      notificadoPor: row.notificadoPor,
+      correoEnviado: row.correoEnviado,
+      leidoEnPortal: row.leidoEnPortal,
+    };
+  }
+
+  private formatFechaDisplay(iso: string): string {
+    if (!iso?.includes('-')) return iso;
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  }
+
+  private buildAbsenceAlertRow(
+    student: Student,
+    stats: {
+      faltasInjustificadas: number;
+      faltasJustificadas: number;
+      fechasFaltas: string[];
+      diasConsecutivos: number;
+      ultimaFalta: string | null;
+      totalRegistrosBd: number;
+    },
+    settings: AlertSettingsResponse,
+    notificationMap: Map<number, AttendanceAlertNotification>,
+  ): AbsenceAlertResponse {
+    const nivelAlerta = this.resolveAbsenceAlertLevel(
+      stats.faltasInjustificadas,
+      stats.diasConsecutivos,
+      settings,
+    );
+    const notification = notificationMap.get(student.id);
+
+    return {
+      studentId: student.id,
+      estudiante: `${student.apellido}, ${student.nombre}`,
+      nivel: student.nivel,
+      grado: student.grado,
+      seccion: student.seccion,
+      faltasInjustificadas: stats.faltasInjustificadas,
+      faltasJustificadas: stats.faltasJustificadas,
+      diasConsecutivos: stats.diasConsecutivos,
+      ultimaFalta: stats.ultimaFalta,
+      nivelAlerta,
+      motivoAlerta: this.buildMotivoAlerta(stats, settings, nivelAlerta),
+      totalRegistrosBd: stats.totalRegistrosBd,
+      fechasInasistencia: stats.fechasFaltas,
+      apoderadoNotificado: !!notification,
+      notificadoAt: notification
+        ? this.formatDateTime(notification.notificadoAt)
+        : null,
+      notificadoPor: notification?.notificadoPor ?? null,
+    };
+  }
+
+  private async loadAlertNotificationMap(
+    studentIds: number[],
+    mes: string,
+  ): Promise<Map<number, AttendanceAlertNotification>> {
+    const map = new Map<number, AttendanceAlertNotification>();
+    if (!studentIds.length) return map;
+
+    const rows = await this.alertNotificationRepository
+      .createQueryBuilder('n')
+      .where('n.studentId IN (:...studentIds)', { studentIds })
+      .andWhere('n.mes = :mes', { mes })
+      .getMany();
+
+    for (const row of rows) {
+      map.set(row.studentId, row);
+    }
+    return map;
   }
 
   async createJustification(
     dto: CreateJustificationDto,
+    files: Express.Multer.File[] = [],
   ): Promise<JustificationResponse> {
     const students = await this.studentsService.findAll();
     const student = students.find((s) => s.id === dto.studentId);
@@ -758,20 +1040,11 @@ export class AttendancesService {
       throw new NotFoundException(`Estudiante ${dto.studentId} no encontrado`);
     }
 
-    const absences = await this.attendancesRepository.find({
-      where: { studentId: dto.studentId, estado: 'F' },
-      order: { fecha: 'DESC' },
-      take: dto.cantidad,
-    });
-
-    if (absences.length < dto.cantidad) {
-      throw new BadRequestException(
-        `Solo hay ${absences.length} falta(s) sin justificar para este estudiante`,
-      );
-    }
+    const absences = await this.resolveJustifiableAbsences(dto);
 
     const attendanceIds = absences.map((a) => a.id);
-    const fechas = absences.map((a) => a.fecha);
+    const fechas = absences.map((a) => this.normalizeFechaKey(a.fecha));
+    const cantidad = absences.length;
     const observacionTexto = dto.observacion?.trim() ?? '';
     const observacionAttendance = observacionTexto
       ? `${dto.motivo} — ${observacionTexto}`
@@ -783,17 +1056,24 @@ export class AttendancesService {
       await this.attendancesRepository.save(att);
     }
 
-    const saved = await this.justificationRepository.save(
+    let saved = await this.justificationRepository.save(
       this.justificationRepository.create({
         studentId: dto.studentId,
-        cantidad: dto.cantidad,
+        cantidad,
         motivo: dto.motivo.trim(),
         observacion: observacionTexto,
         attendanceIds,
         fechas,
+        adjuntos: [],
         registradoPor: dto.registradoPor?.trim() || 'Administración',
       }),
     );
+
+    const adjuntos = saveJustificationFiles(files, dto.studentId, saved.id);
+    if (adjuntos.length) {
+      saved.adjuntos = adjuntos;
+      saved = await this.justificationRepository.save(saved);
+    }
 
     return {
       id: saved.id,
@@ -806,6 +1086,8 @@ export class AttendancesService {
       motivo: saved.motivo,
       observacion: saved.observacion,
       fechas: saved.fechas.map((f) => this.formatDate(f)),
+      attendanceIds: saved.attendanceIds,
+      adjuntos: saved.adjuntos ?? [],
       registradoPor: saved.registradoPor,
       fechaRegistro: this.formatDateTime(saved.createdAt),
     };
@@ -827,6 +1109,8 @@ export class AttendancesService {
         await this.attendancesRepository.save(att);
       }
     }
+
+    this.deleteJustificationFiles(current.adjuntos ?? []);
 
     await this.justificationRepository.remove(current);
     return { deleted: true, id };
@@ -1103,6 +1387,46 @@ export class AttendancesService {
     return 'normal';
   }
 
+  private resolveAbsenceAlertLevel(
+    faltasInjustificadas: number,
+    diasConsecutivos: number,
+    settings: AlertSettingsResponse,
+  ): 'normal' | 'alerta' | 'critico' {
+    const superaCritico =
+      faltasInjustificadas > settings.diasAlertaCritica ||
+      diasConsecutivos > settings.diasAlertaCritica;
+    if (superaCritico) return 'critico';
+
+    const superaAlerta =
+      faltasInjustificadas > settings.diasAlertaAusentismo ||
+      diasConsecutivos > settings.diasAlertaAusentismo;
+    if (superaAlerta) return 'alerta';
+
+    return 'normal';
+  }
+
+  private buildMotivoAlerta(
+    stats: {
+      faltasInjustificadas: number;
+      diasConsecutivos: number;
+    },
+    settings: AlertSettingsResponse,
+    nivelAlerta: 'normal' | 'alerta' | 'critico',
+  ): string {
+    if (nivelAlerta === 'normal') {
+      return `${stats.faltasInjustificadas} falta(s) injustificada(s) registrada(s) en BD`;
+    }
+
+    const motivos: string[] = [];
+    if (stats.faltasInjustificadas > settings.diasAlertaAusentismo) {
+      motivos.push(`${stats.faltasInjustificadas} faltas injustificadas`);
+    }
+    if (stats.diasConsecutivos > settings.diasAlertaAusentismo) {
+      motivos.push(`${stats.diasConsecutivos} dias consecutivos`);
+    }
+    return motivos.join(' · ');
+  }
+
   private weekdayShort(dateMs: number): string {
     const labels = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
     return labels[new Date(dateMs).getUTCDay()];
@@ -1132,16 +1456,176 @@ export class AttendancesService {
     return settings;
   }
 
-  private async getStudentAttendances(studentId: number, mes?: string) {
-    const qb = this.attendancesRepository
-      .createQueryBuilder('a')
-      .where('a.studentId = :studentId', { studentId });
-
-    if (mes) {
-      qb.andWhere("TO_CHAR(a.fecha, 'YYYY-MM') = :mes", { mes });
+  private resolveMesBounds(mes: string): {
+    year: number;
+    month: number;
+    desde: string;
+    hasta: string;
+  } {
+    const mesKey = mes.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(mesKey)) {
+      throw new BadRequestException('El mes debe tener formato YYYY-MM');
     }
 
-    return qb.getMany();
+    const [yearStr, monthStr] = mesKey.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const grid = this.buildMonthGrid(year, month);
+    const diasMes = grid.filter((c) => c.esMesActual);
+
+    return {
+      year,
+      month,
+      desde: diasMes[0]?.fecha ?? `${mesKey}-01`,
+      hasta: diasMes[diasMes.length - 1]?.fecha ?? `${mesKey}-28`,
+    };
+  }
+
+  private async loadAttendancesByStudents(
+    studentIds: number[],
+    desde?: string,
+    hasta?: string,
+  ): Promise<Map<number, Attendance[]>> {
+    const byStudent = new Map<number, Attendance[]>();
+    if (!studentIds.length) return byStudent;
+
+    const qb = this.attendancesRepository
+      .createQueryBuilder('a')
+      .where('a.studentId IN (:...studentIds)', { studentIds })
+      .orderBy('a.fecha', 'ASC');
+
+    if (desde) qb.andWhere('a.fecha >= :desde', { desde });
+    if (hasta) qb.andWhere('a.fecha <= :hasta', { hasta });
+
+    const attendances = await qb.getMany();
+    for (const att of attendances) {
+      const list = byStudent.get(att.studentId) ?? [];
+      list.push(att);
+      byStudent.set(att.studentId, list);
+    }
+
+    return byStudent;
+  }
+
+  private deleteJustificationFiles(adjuntos: JustificacionAdjuntoMeta[]): void {
+    for (const adj of adjuntos) {
+      const rel = adj.url.replace(/^\/uploads\/?/, '').replace(/\//g, sep);
+      const abs = join(process.cwd(), 'uploads', rel);
+      if (existsSync(abs)) {
+        try {
+          unlinkSync(abs);
+        } catch {
+          // ignorar si ya no existe
+        }
+      }
+    }
+  }
+
+  private mapPendingAbsenceDetails(records: Attendance[]): FaltaPendienteDetalle[] {
+    return records
+      .filter((a) => a.estado === 'F')
+      .map((a) => ({
+        id: a.id,
+        fecha: this.normalizeFechaKey(a.fecha),
+        fechaLabel: this.formatDate(this.normalizeFechaKey(a.fecha)),
+        observacion: a.observacion ?? undefined,
+      }))
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  }
+
+  private async resolveJustifiableAbsences(
+    dto: CreateJustificationDto,
+  ): Promise<Attendance[]> {
+    if (dto.attendanceIds?.length) {
+      const absences = await this.attendancesRepository.find({
+        where: {
+          id: In(dto.attendanceIds),
+          studentId: dto.studentId,
+          estado: 'F',
+        },
+        order: { fecha: 'ASC' },
+      });
+
+      if (absences.length !== dto.attendanceIds.length) {
+        throw new BadRequestException(
+          'Una o más faltas seleccionadas no existen en BD o ya fueron justificadas',
+        );
+      }
+
+      if (dto.mes?.trim()) {
+        this.assertAbsencesWithinMes(absences, dto.mes);
+      }
+
+      if (dto.cantidad !== absences.length) {
+        throw new BadRequestException(
+          'La cantidad debe coincidir con las faltas seleccionadas de BD',
+        );
+      }
+
+      return absences;
+    }
+
+    const qb = this.attendancesRepository
+      .createQueryBuilder('a')
+      .where('a.studentId = :studentId', { studentId: dto.studentId })
+      .andWhere("a.estado = 'F'");
+
+    if (dto.mes?.trim()) {
+      const bounds = this.resolveMesBounds(dto.mes);
+      qb.andWhere('a.fecha >= :desde', { desde: bounds.desde }).andWhere(
+        'a.fecha <= :hasta',
+        { hasta: bounds.hasta },
+      );
+    }
+
+    const absences = await qb
+      .orderBy('a.fecha', 'DESC')
+      .take(dto.cantidad)
+      .getMany();
+
+    if (absences.length < dto.cantidad) {
+      const scope = dto.mes?.trim()
+        ? ` en ${dto.mes.slice(0, 7)}`
+        : '';
+      throw new BadRequestException(
+        `Solo hay ${absences.length} falta(s) sin justificar${scope} para este estudiante`,
+      );
+    }
+
+    return absences.reverse();
+  }
+
+  private assertAbsencesWithinMes(absences: Attendance[], mes: string): void {
+    const bounds = this.resolveMesBounds(mes);
+    const invalid = absences.filter((att) => {
+      const fecha = this.normalizeFechaKey(att.fecha);
+      return fecha < bounds.desde || fecha > bounds.hasta;
+    });
+    if (invalid.length) {
+      throw new BadRequestException(
+        'Las faltas seleccionadas deben pertenecer al mes indicado',
+      );
+    }
+  }
+
+  private computeAbsenceStats(records: Attendance[]) {
+    const faltasInjustificadas = records.filter((a) => a.estado === 'F').length;
+    const faltasJustificadas = records.filter((a) => a.estado === 'J').length;
+    const fechasFaltas = records
+      .filter((a) => a.estado === 'F')
+      .map((a) => this.normalizeFechaKey(a.fecha))
+      .sort();
+
+    return {
+      faltasInjustificadas,
+      faltasJustificadas,
+      fechasFaltas,
+      diasConsecutivos: calcMaxConsecutiveDays(fechasFaltas),
+      ultimaFalta: fechasFaltas.length
+        ? this.formatDate(fechasFaltas[fechasFaltas.length - 1])
+        : null,
+      totalRegistrosBd: records.length,
+    };
   }
 
   private todayIso(): string {

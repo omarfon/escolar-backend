@@ -22,8 +22,6 @@ import { In } from 'typeorm';
 import { WaitlistEntry } from '../waitlist/entities/waitlist-entry.entity';
 import { ActasService } from '../actas/actas.service';
 import { EvaluationActa } from '../actas/entities/evaluation-acta.entity';
-import { Evento } from '../events/entities/evento.entity';
-import { MAESTRO_EVENTOS_SEED } from '../maestros/eventos/eventos-seed.data';
 import { TeacherResource } from '../resources/entities/teacher-resource.entity';
 import { ParentStudent } from '../parents/entities/parent-student.entity';
 import { ConductIncident } from '../conduct-incidents/entities/conduct-incident.entity';
@@ -115,7 +113,6 @@ export class DatabaseSeedService {
     await this.seedCompetencyEvaluations();
     await this.seedWaitlist();
     await this.seedActas();
-    await this.seedEvents();
     await this.seedResources();
     await this.ensureEntregasDemoData();
     await this.seedParentStudents();
@@ -164,6 +161,30 @@ export class DatabaseSeedService {
   async seedStudentDocumentsFromDb(): Promise<void> {
     await this.ensureStudentsForAsistencia();
     await this.ensureStudentDocuments(true);
+  }
+
+  /**
+   * Persiste eventos demo (eventos-seed.data.ts) en la tabla `eventos`.
+   * Solo scripts npm — la API lee únicamente desde BD.
+   */
+  async seedEventsFromCatalog(): Promise<void> {
+    await this.eventosMaestrosService.seedCatalogIfEmpty();
+  }
+
+  /**
+   * Carga en PostgreSQL los catálogos demo de estudiantes, documentos, entregas y eventos
+   * desde archivos *-seed.data.ts. Solo scripts npm — la API lee únicamente desde BD.
+   */
+  async seedDemoStudentCatalogFromFiles(): Promise<void> {
+    await this.ensureStudentsForAsistencia();
+    await this.ensureDemoLoginStudent();
+    await this.ensureDemoStudentAttendances();
+    await this.ensureStudentRepresentatives();
+    await this.ensureStudentProfiles();
+    await this.ensureStudentAcademicHistory();
+    await this.ensureStudentDocuments(true);
+    await this.seedEventsFromCatalog();
+    await this.ensureEntregasDemoData();
   }
 
   /**
@@ -715,7 +736,18 @@ export class DatabaseSeedService {
     email: string,
     trabajo: string,
   ): RepresentanteData {
-    return { nombres, apellidos, dni, telefono, email, trabajo };
+    const parts = apellidos.trim().split(/\s+/).filter(Boolean);
+    return {
+      nombres,
+      apellidos,
+      apellidoPaterno: parts[0] ?? '',
+      apellidoMaterno: parts.slice(1).join(' '),
+      tipoDocumento: 'DNI',
+      dni,
+      telefono,
+      email,
+      trabajo,
+    };
   }
 
   private isRepEmpty(rep?: RepresentanteData | null): boolean {
@@ -729,6 +761,9 @@ export class DatabaseSeedService {
     return {
       nombres: current.nombres?.trim() || full.nombres,
       apellidos: current.apellidos?.trim() || full.apellidos,
+      apellidoPaterno: current.apellidoPaterno?.trim() || full.apellidoPaterno,
+      apellidoMaterno: current.apellidoMaterno?.trim() || full.apellidoMaterno,
+      tipoDocumento: current.tipoDocumento?.trim() || full.tipoDocumento,
       dni: current.dni?.trim() || full.dni,
       telefono: current.telefono?.trim() || full.telefono,
       email: current.email?.trim() || full.email,
@@ -1616,13 +1651,6 @@ export class DatabaseSeedService {
         // Sin notas suficientes para esta seccion
       }
     }
-  }
-
-  private async seedEvents() {
-    const repo = this.dataSource.getRepository(Evento);
-    if (await repo.count()) return;
-
-    await repo.save(MAESTRO_EVENTOS_SEED.map((e) => repo.create(e)));
   }
 
   private async seedResources() {

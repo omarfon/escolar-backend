@@ -1,3 +1,4 @@
+/** Entregas demo — cargar con npm run db:entregas-data o db:demo-student-catalog. La API solo lee BD. */
 /** Salón demo para revisión de entregas docente ↔ estudiante. */
 export const ENTREGAS_DEMO_SALON = {
   nivel: 'Primaria',

@@ -53,6 +53,7 @@ export class AuthService {
 
     const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
     const roles = [user.rol] as UserRole[];
+    const esAdmin = await this.rolesService.isAdminRole(user.rol);
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 86400;
     const payload = {
@@ -81,7 +82,7 @@ export class AuthService {
       refreshToken: `refresh_${user.id}_${now}`,
       expiresIn: 86400,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles),
+      user: this.buildAuthUser(user, permisos, roles, esAdmin),
     };
   }
 
@@ -92,12 +93,13 @@ export class AuthService {
     }
     const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
     const roles = [user.rol] as UserRole[];
+    const esAdmin = await this.rolesService.isAdminRole(user.rol);
     return {
       accessToken: null,
       refreshToken: null,
       expiresIn: 0,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles),
+      user: this.buildAuthUser(user, permisos, roles, esAdmin),
     };
   }
 
@@ -116,6 +118,7 @@ export class AuthService {
     }
     const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
     const roles = [user.rol] as UserRole[];
+    const esAdmin = await this.rolesService.isAdminRole(user.rol);
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 86400;
     const payload = {
@@ -135,7 +138,7 @@ export class AuthService {
       refreshToken: `refresh_${user.id}_${now}`,
       expiresIn: 86400,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles),
+      user: this.buildAuthUser(user, permisos, roles, esAdmin),
     };
   }
 
@@ -143,6 +146,7 @@ export class AuthService {
     user: AuthUserSource,
     permisos: string[],
     roles: UserRole[],
+    esAdmin = false,
   ) {
     const ultimo =
       user.ultimoAcceso instanceof Date
@@ -157,6 +161,7 @@ export class AuthService {
       username: user.username,
       roles: roles.map((r) => ({ id: r, codigo: r, nombre: r, nivel: 1 })),
       permisos,
+      esAdmin,
       institucionId: 'inst-001',
       estado: user.estado,
       ultimoAcceso: ultimo,

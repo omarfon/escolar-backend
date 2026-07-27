@@ -1,3 +1,4 @@
+/** Perfiles de alumnos demo — cargar con npm run db:student-profiles o db:demo-student-catalog. La API solo lee BD. */
 import { RepresentanteData } from '../students/entities/student.entity';
 
 export interface StudentProfileSeed {
@@ -28,7 +29,22 @@ const rep = (
   telefono: string,
   email: string,
   trabajo: string,
-): RepresentanteData => ({ nombres, apellidos, dni, telefono, email, trabajo });
+): RepresentanteData => {
+  const parts = apellidos.trim().split(/\s+/).filter(Boolean);
+  const apellidoPaterno = parts[0] ?? '';
+  const apellidoMaterno = parts.slice(1).join(' ');
+  return {
+    nombres,
+    apellidos,
+    apellidoPaterno,
+    apellidoMaterno,
+    tipoDocumento: 'DNI',
+    dni,
+    telefono,
+    email,
+    trabajo,
+  };
+};
 
 const familiaPerez = {
   padre: rep('Carlos', 'Perez Mamani', '40123456', '987001001', 'cperez@gmail.com', 'Ingeniero Civil'),

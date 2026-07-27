@@ -37,8 +37,11 @@ import {
   buildCodigo,
   ExpedienteResponse,
   gradoLabelFromParts,
+  mapSectionChangeCandidate,
   normalizeRepresentante,
   parseFechaNacInput,
+  resolveApellidos,
+  SectionChangeCandidateResponse,
   splitGradoLabel,
   toExpedienteResponse,
 } from './students.mapper';
@@ -49,6 +52,7 @@ import {
   StudentGradesResponse,
 } from './dto/student-grades.dto';
 import { listStudentsForAula } from './students-dedupe.util';
+import { StudentsStatsDto } from './dto/students-stats.dto';
 import { HorarioBlock } from '../horarios/entities/horario-block.entity';
 import {
   abrevDocente,
@@ -71,6 +75,16 @@ import {
   BulkMatriculaRowDto,
 } from './dto/bulk-import-students.dto';
 import { parseMatriculaFile, FilaParseadaMatricula } from './bulk-matricula.parser';
+import {
+  BulkHistorialPreviewItem,
+  BulkHistorialPreviewResult,
+  BulkHistorialRowDto,
+  BulkImportHistorialResult,
+} from './dto/bulk-import-historial.dto';
+import {
+  FilaParseadaHistorial,
+  parseHistorialFile,
+} from './bulk-historial.parser';
 import { SalonesService } from '../maestros/salones/salones.service';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 
@@ -125,36 +139,40 @@ export class StudentsService implements OnModuleInit {
   }
 
   async createExpediente(dto: CreateExpedienteDto): Promise<ExpedienteResponse> {
+    await this.assertDocumentoMatriculaDisponible(dto.dni, dto.tipoDocumento);
+
     const email = dto.email.trim().toLowerCase();
     const existingEmail = await this.studentsRepository.findOneBy({ email });
     if (existingEmail) {
-      throw new BadRequestException('Ya existe un estudiante con ese correo electrónico');
-    }
-
-    if (dto.dni?.trim()) {
-      const existingDni = await this.studentsRepository.findOneBy({
-        dni: dto.dni.trim(),
-      });
-      if (existingDni) {
-        throw new BadRequestException('Ya existe un estudiante con ese DNI');
+      if (this.esConflictoDocumentoPorEmail(email, dto.dni, existingEmail.dni)) {
+        throw new BadRequestException('Ya existe un estudiante con ese número de documento');
       }
+      throw new BadRequestException('Ya existe un estudiante con ese correo electrónico');
     }
 
     const { nivel, grado } = splitGradoLabel(dto.gradoLabel);
     const estado = dto.estado ?? 'activo';
+    const apellidos = resolveApellidos(dto);
     const entity = this.studentsRepository.create({
       nombre: dto.nombres.trim(),
-      apellido: dto.apellidos.trim(),
-      email: dto.email.trim(),
+      apellido: apellidos.apellido,
+      apellidoPaterno: apellidos.apellidoPaterno,
+      apellidoMaterno: apellidos.apellidoMaterno,
+      email,
       nivel,
       grado,
       seccion: dto.seccion.trim().toUpperCase(),
       activo: estado === 'activo',
       codigo: dto.codigo?.trim() ?? '',
       dni: dto.dni?.trim() ?? '',
+      tipoDocumento: dto.tipoDocumento?.trim() || 'DNI',
       fechaNac: parseFechaNacInput(dto.fechaNac),
       sexo: dto.sexo ?? 'M',
       direccion: dto.direccion?.trim() ?? '',
+      distrito: dto.distrito?.trim() ?? '',
+      provincia: dto.provincia?.trim() ?? '',
+      departamento: dto.departamento?.trim() ?? '',
+      telefonoEmergencia: dto.telefonoEmergencia?.trim() ?? '',
       foto: dto.foto?.trim() ?? '',
       grupoSanguineo: dto.grupoSanguineo?.trim() || 'O+',
       alergias: dto.alergias?.trim() ?? '',
@@ -201,28 +219,53 @@ export class StudentsService implements OnModuleInit {
           row.email?.trim().toLowerCase() ||
           `alumno.${row.dni.trim()}@estudiante.pe`;
 
+        const apellidos = resolveApellidos({
+          apellidos: row.apellidos,
+          apellidoPaterno: row.apellidoPaterno,
+          apellidoMaterno: row.apellidoMaterno,
+        });
+
         const apoderado = row.apoderadoNombres?.trim()
-          ? {
+          ? normalizeRepresentante({
               nombres: row.apoderadoNombres.trim(),
-              apellidos: row.apoderadoApellidos?.trim() ?? '',
+              apellidos: row.apoderadoApellidos?.trim(),
+              apellidoPaterno: row.apoderadoApellidoPaterno?.trim(),
+              apellidoMaterno: row.apoderadoApellidoMaterno?.trim(),
+              tipoDocumento: row.apoderadoTipoDocumento?.trim() || 'DNI',
               dni: row.apoderadoDni?.trim() ?? '',
               telefono: row.apoderadoTelefono?.trim() ?? '',
               email: row.apoderadoEmail?.trim() ?? '',
-            }
+            })
           : undefined;
+
+        const parentesco = row.apoderadoParentesco;
+        const padre =
+          parentesco === 'padre' && apoderado ? apoderado : undefined;
+        const madre =
+          parentesco === 'madre' && apoderado ? apoderado : undefined;
 
         const saved = await this.createExpediente({
           nombres: row.nombres.trim(),
-          apellidos: row.apellidos.trim(),
+          apellidos: apellidos.apellido,
+          apellidoPaterno: apellidos.apellidoPaterno,
+          apellidoMaterno: apellidos.apellidoMaterno,
+          tipoDocumento: row.tipoDocumento?.trim() || 'DNI',
           dni: row.dni.trim(),
           email,
           sexo: row.sexo ?? 'M',
           fechaNac: parseFechaNacInput(row.fechaNac) ?? undefined,
+          direccion: row.direccion.trim(),
+          distrito: row.distrito?.trim(),
+          provincia: row.provincia?.trim(),
+          departamento: row.departamento?.trim(),
+          telefonoEmergencia: row.telefonoEmergencia?.trim(),
           gradoLabel,
           seccion: row.seccion.trim().toUpperCase(),
           anioIngreso:
             row.anioIngreso?.trim() || String(new Date().getFullYear()),
           estado: 'activo',
+          padre,
+          madre,
           apoderado,
         });
         creados.push(saved);
@@ -310,10 +353,14 @@ export class StudentsService implements OnModuleInit {
     for (const row of candidatos) {
       const email = this.resolveBulkEmail(row);
       const motivos: string[] = [];
-      if (dniSet.has(row.dni.trim())) {
+      const docDuplicado = dniSet.has(row.dni.trim());
+      const emailDuplicado = emailSet.has(email.toLowerCase());
+      if (
+        docDuplicado ||
+        (emailDuplicado && this.esConflictoDocumentoPorEmail(email, row.dni))
+      ) {
         motivos.push('Ya existe un estudiante con ese DNI');
-      }
-      if (emailSet.has(email.toLowerCase())) {
+      } else if (emailDuplicado) {
         motivos.push('Ya existe un estudiante con ese correo electronico');
       }
       if (motivos.length) {
@@ -335,6 +382,450 @@ export class StudentsService implements OnModuleInit {
     };
   }
 
+  async bulkImportHistorial(
+    filas: BulkHistorialRowDto[],
+    erroresValidacion: BulkImportHistorialResult['erroresValidacion'] = [],
+  ): Promise<BulkImportHistorialResult> {
+    const errores: BulkImportHistorialResult['errores'] = [];
+    const importados: BulkImportHistorialResult['filas'] = [];
+    let creados = 0;
+    let actualizados = 0;
+    let sinCambios = 0;
+
+    for (let i = 0; i < filas.length; i++) {
+      const row = filas[i];
+      const fila = row.fila ?? i + 2;
+      try {
+        const student = await this.findStudentForHistorialRow(row);
+        if (!student) {
+          errores.push({
+            fila,
+            dni: row.dni ?? '',
+            email: row.email ?? '',
+            mensaje: 'Estudiante no encontrado',
+          });
+          continue;
+        }
+
+        const mismatch = this.historialAlumnoNoCoincide(row, student);
+        if (mismatch) {
+          errores.push({
+            fila,
+            dni: row.dni ?? '',
+            email: row.email ?? '',
+            mensaje: mismatch,
+          });
+          continue;
+        }
+
+        const anio = row.anio.trim();
+        const payload = {
+          studentId: student.id,
+          anio,
+          grado: row.grado.trim(),
+          seccion: row.seccion.trim().toUpperCase(),
+          promedio: row.promedio,
+          estado: row.estado?.trim() || 'Promovido',
+        };
+
+        const existing = await this.historyRepo.findOne({
+          where: { studentId: student.id, anio },
+        });
+
+        if (existing) {
+          if (this.historialCoincide(existing, row)) {
+            sinCambios++;
+            importados.push(
+              this.buildHistorialImportRow(student, row, payload, 'sin_cambios'),
+            );
+            continue;
+          }
+          existing.grado = payload.grado;
+          existing.seccion = payload.seccion;
+          existing.promedio = payload.promedio;
+          existing.estado = payload.estado;
+          await this.historyRepo.save(existing);
+          actualizados++;
+          importados.push(
+            this.buildHistorialImportRow(student, row, payload, 'actualizado'),
+          );
+        } else {
+          await this.historyRepo.save(this.historyRepo.create(payload));
+          creados++;
+          importados.push(
+            this.buildHistorialImportRow(student, row, payload, 'creado'),
+          );
+        }
+      } catch (err: unknown) {
+        errores.push({
+          fila,
+          dni: row.dni ?? '',
+          email: row.email ?? '',
+          mensaje: this.extractBulkMatriculaError(err),
+        });
+      }
+    }
+
+    return {
+      total: filas.length + erroresValidacion.length,
+      importados: creados + actualizados,
+      creados,
+      actualizados,
+      sinCambios,
+      omitidos: erroresValidacion.length,
+      errores,
+      erroresValidacion,
+      filas: importados,
+    };
+  }
+
+  async bulkImportHistorialFromFile(
+    buffer: Buffer,
+    originalname: string,
+  ): Promise<BulkImportHistorialResult> {
+    const parsed = parseHistorialFile(buffer, originalname);
+    if (!parsed.validas.length) {
+      return {
+        total: parsed.filas.length,
+        importados: 0,
+        creados: 0,
+        actualizados: 0,
+        sinCambios: 0,
+        omitidos: parsed.erroresValidacion.length,
+        errores: [],
+        erroresValidacion: parsed.erroresValidacion,
+        filas: [],
+      };
+    }
+    return this.bulkImportHistorial(parsed.validas, parsed.erroresValidacion);
+  }
+
+  async previewBulkHistorialFromFile(
+    buffer: Buffer,
+    originalname: string,
+  ): Promise<BulkHistorialPreviewResult> {
+    const parsed = parseHistorialFile(buffer, originalname);
+    return this.previewBulkHistorialFilas(parsed.filas);
+  }
+
+  async previewBulkHistorialFilas(
+    filas: FilaParseadaHistorial[],
+  ): Promise<BulkHistorialPreviewResult> {
+    const bloqueados: BulkHistorialPreviewItem[] = [];
+    const candidatos: FilaParseadaHistorial[] = [];
+
+    for (const row of filas) {
+      if (!row.valido) {
+        bloqueados.push(
+          this.toHistorialPreviewItem(row, row.errores.join('; ') || 'Datos invalidos'),
+        );
+        continue;
+      }
+      candidatos.push(row);
+    }
+
+    const listos: BulkHistorialPreviewItem[] = [];
+    const seenInFile = new Map<string, number>();
+    const resolved: Array<{ row: FilaParseadaHistorial; student: Student }> = [];
+
+    for (const row of candidatos) {
+      const student = await this.findStudentForHistorialRow(row);
+      if (!student) {
+        bloqueados.push(
+          this.toHistorialPreviewItem(row, 'Estudiante no encontrado en el sistema'),
+        );
+        continue;
+      }
+      const mismatch = this.historialAlumnoNoCoincide(row, student);
+      if (mismatch) {
+        bloqueados.push(this.toHistorialPreviewItem(row, mismatch, student));
+        continue;
+      }
+
+      const fileKey = `${student.id}:${row.anio.trim()}`;
+      const filaDuplicada = seenInFile.get(fileKey);
+      if (filaDuplicada !== undefined) {
+        bloqueados.push(
+          this.toHistorialPreviewItem(
+            row,
+            `Registro duplicado en el archivo (mismo alumno y anio que fila ${filaDuplicada})`,
+            student,
+          ),
+        );
+        continue;
+      }
+      seenInFile.set(fileKey, row.fila);
+      resolved.push({ row, student });
+    }
+
+    const existingRows = resolved.length
+      ? await this.historyRepo.find({
+          where: resolved.map(({ row, student }) => ({
+            studentId: student.id,
+            anio: row.anio.trim(),
+          })),
+        })
+      : [];
+    const historyMap = new Map(
+      existingRows.map((h) => [`${h.studentId}:${h.anio}`, h]),
+    );
+
+    for (const { row, student } of resolved) {
+      const existing = historyMap.get(`${student.id}:${row.anio.trim()}`) ?? null;
+      listos.push(this.toHistorialPreviewItem(row, undefined, student, existing));
+    }
+
+    bloqueados.sort((a, b) => a.fila - b.fila);
+    listos.sort((a, b) => a.fila - b.fila);
+
+    const nuevosCount = listos.filter((r) => r.accionPrevista === 'creado').length;
+    const actualizadosCount = listos.filter(
+      (r) => r.accionPrevista === 'actualizado',
+    ).length;
+    const sinCambiosCount = listos.filter(
+      (r) => r.accionPrevista === 'sin_cambios',
+    ).length;
+
+    return {
+      total: filas.length,
+      listosCount: listos.length,
+      bloqueadosCount: bloqueados.length,
+      nuevosCount,
+      actualizadosCount,
+      sinCambiosCount,
+      listos,
+      bloqueados,
+    };
+  }
+
+  private historialCoincide(
+    existing: StudentAcademicHistory,
+    row: Pick<BulkHistorialRowDto, 'grado' | 'seccion' | 'promedio' | 'estado'>,
+  ): boolean {
+    const estado = row.estado?.trim() || 'Promovido';
+    return (
+      existing.grado.trim() === row.grado.trim() &&
+      existing.seccion.trim().toUpperCase() === row.seccion.trim().toUpperCase() &&
+      Math.abs(existing.promedio - row.promedio) < 0.01 &&
+      existing.estado.trim() === estado
+    );
+  }
+
+  private resolveHistorialAccion(
+    existing: StudentAcademicHistory | null,
+    row: FilaParseadaHistorial,
+  ): {
+    yaRegistrado: boolean;
+    accionPrevista: 'creado' | 'actualizado' | 'sin_cambios';
+    registroAnterior?: {
+      grado: string;
+      seccion: string;
+      promedio: number;
+      estado: string;
+    };
+  } {
+    if (!existing) {
+      return { yaRegistrado: false, accionPrevista: 'creado' };
+    }
+    const registroAnterior = {
+      grado: existing.grado,
+      seccion: existing.seccion,
+      promedio: existing.promedio,
+      estado: existing.estado,
+    };
+    if (this.historialCoincide(existing, row)) {
+      return {
+        yaRegistrado: true,
+        accionPrevista: 'sin_cambios',
+        registroAnterior,
+      };
+    }
+    return {
+      yaRegistrado: true,
+      accionPrevista: 'actualizado',
+      registroAnterior,
+    };
+  }
+
+  private async findStudentForHistorialRow(
+    row: Pick<
+      BulkHistorialRowDto,
+      'dni' | 'codigo' | 'email' | 'nombres' | 'apellidos' | 'apellidoPaterno' | 'apellidoMaterno'
+    >,
+  ): Promise<Student | null> {
+    const dni = row.dni?.trim();
+    if (dni) {
+      const byDni = await this.studentsRepository.findOne({ where: { dni } });
+      if (byDni) return byDni;
+    }
+
+    const codigo = row.codigo?.trim();
+    if (codigo) {
+      const byCodigo = await this.studentsRepository.findOne({ where: { codigo } });
+      if (byCodigo) return byCodigo;
+    }
+
+    const email = row.email?.trim().toLowerCase();
+    if (email) {
+      const byEmail = await this.studentsRepository.findOne({ where: { email } });
+      if (byEmail) return byEmail;
+    }
+
+    const nombres = row.nombres?.trim();
+    const apellidos =
+      row.apellidos?.trim() ||
+      [row.apellidoPaterno?.trim(), row.apellidoMaterno?.trim()]
+        .filter(Boolean)
+        .join(' ');
+    if (nombres && apellidos) {
+      const byNombre = await this.studentsRepository.findOne({
+        where: { nombre: nombres, apellido: apellidos },
+      });
+      if (byNombre) return byNombre;
+    }
+
+    return null;
+  }
+
+  private historialAlumnoNoCoincide(
+    row: Pick<
+      BulkHistorialRowDto,
+      'dni' | 'nombres' | 'apellidos' | 'apellidoPaterno' | 'apellidoMaterno'
+    >,
+    student: Student,
+  ): string | null {
+    const norm = (v: string) =>
+      v
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+    const fileDni = row.dni?.trim();
+    if (fileDni && student.dni?.trim() && fileDni !== student.dni.trim()) {
+      return `DNI no coincide con el alumno registrado (${student.dni})`;
+    }
+
+    const fileNombres = row.nombres?.trim();
+    if (fileNombres && norm(fileNombres) !== norm(student.nombre)) {
+      return `Nombres no coinciden con el alumno registrado (${student.nombre})`;
+    }
+
+    const fileApellidos =
+      row.apellidos?.trim() ||
+      [row.apellidoPaterno?.trim(), row.apellidoMaterno?.trim()]
+        .filter(Boolean)
+        .join(' ');
+    if (fileApellidos && norm(fileApellidos) !== norm(student.apellido)) {
+      return `Apellidos no coinciden con el alumno registrado (${student.apellido})`;
+    }
+
+    return null;
+  }
+
+  private buildHistorialImportRow(
+    student: Student,
+    _row: BulkHistorialRowDto,
+    payload: {
+      anio: string;
+      grado: string;
+      seccion: string;
+      promedio: number;
+      estado: string;
+    },
+    accion: 'creado' | 'actualizado' | 'sin_cambios',
+  ): BulkImportHistorialResult['filas'][number] {
+    return {
+      studentId: student.id,
+      codigo: student.codigo,
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      apellidoPaterno: student.apellidoPaterno,
+      apellidoMaterno: student.apellidoMaterno,
+      dni: student.dni,
+      email: student.email,
+      nivel: student.nivel,
+      anio: payload.anio,
+      grado: payload.grado,
+      seccion: payload.seccion,
+      promedio: payload.promedio,
+      estado: payload.estado,
+      accion,
+    };
+  }
+
+  private toHistorialPreviewItem(
+    row: FilaParseadaHistorial,
+    motivo?: string,
+    student?: Student | null,
+    existing?: StudentAcademicHistory | null,
+  ): BulkHistorialPreviewItem {
+    const apellidos =
+      row.apellidos?.trim() ||
+      [row.apellidoPaterno?.trim(), row.apellidoMaterno?.trim()]
+        .filter(Boolean)
+        .join(' ') ||
+      student?.apellido ||
+      '';
+
+    const accion = this.resolveHistorialAccion(existing ?? null, row);
+
+    return {
+      fila: row.fila,
+      nombres: row.nombres?.trim() || student?.nombre || '',
+      apellidos,
+      apellidoPaterno: row.apellidoPaterno?.trim() || student?.apellidoPaterno || '',
+      apellidoMaterno: row.apellidoMaterno?.trim() || student?.apellidoMaterno || '',
+      dni: row.dni?.trim() || student?.dni || '',
+      codigo: row.codigo?.trim() || student?.codigo || '',
+      email: row.email?.trim() || student?.email || '',
+      nivel: row.nivel?.trim() || student?.nivel || '',
+      anio: row.anio,
+      grado: row.grado,
+      seccion: row.seccion,
+      promedio: row.promedio,
+      estado: row.estado ?? 'Promovido',
+      yaRegistrado: accion.yaRegistrado,
+      accionPrevista: accion.accionPrevista,
+      registroAnterior: accion.registroAnterior,
+      motivo,
+    };
+  }
+
+  private emailInstitucionalPorDocumento(numero: string): string {
+    return `alumno.${numero.trim()}@estudiante.pe`.toLowerCase();
+  }
+
+  private esConflictoDocumentoPorEmail(
+    email: string,
+    numero?: string,
+    numeroExistente?: string,
+  ): boolean {
+    const docNum = numero?.trim();
+    if (!docNum) return false;
+    const emailNormalizado = email.trim().toLowerCase();
+    if (emailNormalizado === this.emailInstitucionalPorDocumento(docNum)) {
+      return true;
+    }
+    return numeroExistente?.trim() === docNum;
+  }
+
+  private async assertDocumentoMatriculaDisponible(
+    numero?: string,
+    tipoDocumento?: string,
+  ): Promise<void> {
+    const docNum = numero?.trim();
+    if (!docNum) return;
+
+    const tipo = tipoDocumento?.trim() || 'DNI';
+    const existing = await this.studentsRepository.findOne({
+      where: { dni: docNum, tipoDocumento: tipo },
+    });
+    if (existing) {
+      throw new BadRequestException('Ya existe un estudiante con ese número de documento');
+    }
+  }
+
   private resolveBulkEmail(row: BulkMatriculaRowDto): string {
     return (
       row.email?.trim().toLowerCase() ||
@@ -347,23 +838,40 @@ export class StudentsService implements OnModuleInit {
     motivo?: string,
   ): BulkMatriculaPreviewItem {
     const gradoNum = row.grado.replace(/°/g, '').trim();
+    const apellidos = resolveApellidos({
+      apellidos: row.apellidos,
+      apellidoPaterno: row.apellidoPaterno,
+      apellidoMaterno: row.apellidoMaterno,
+    });
     return {
       fila: row.fila,
       nombres: row.nombres.trim(),
-      apellidos: row.apellidos.trim(),
+      apellidos: apellidos.apellido,
+      apellidoPaterno: apellidos.apellidoPaterno,
+      apellidoMaterno: apellidos.apellidoMaterno,
+      tipoDocumento: row.tipoDocumento,
       dni: row.dni.trim(),
       email: this.resolveBulkEmail(row),
       sexo: row.sexo,
       fechaNac: row.fechaNac,
+      direccion: row.direccion?.trim() ?? '',
+      distrito: row.distrito,
+      provincia: row.provincia,
+      departamento: row.departamento,
+      telefonoEmergencia: row.telefonoEmergencia,
       nivel: row.nivel,
       grado: row.grado,
       seccion: row.seccion.trim().toUpperCase(),
       anioIngreso: row.anioIngreso,
       apoderadoNombres: row.apoderadoNombres,
       apoderadoApellidos: row.apoderadoApellidos,
+      apoderadoApellidoPaterno: row.apoderadoApellidoPaterno,
+      apoderadoApellidoMaterno: row.apoderadoApellidoMaterno,
+      apoderadoTipoDocumento: row.apoderadoTipoDocumento,
       apoderadoDni: row.apoderadoDni,
       apoderadoTelefono: row.apoderadoTelefono,
       apoderadoEmail: row.apoderadoEmail,
+      apoderadoParentesco: row.apoderadoParentesco,
       gradoLabel: `${gradoNum}° ${row.nivel}`,
       motivo,
     };
@@ -396,7 +904,8 @@ export class StudentsService implements OnModuleInit {
       order: { apellido: 'ASC', nombre: 'ASC' },
     });
     const query = search?.trim().toLowerCase();
-    const filtered = query
+    const tokens = query ? query.split(/\s+/).filter(Boolean) : [];
+    const filtered = tokens.length
       ? students.filter((s) => {
           const gradoLabel = gradoLabelFromParts(s.nivel, s.grado);
           const haystack = [
@@ -407,13 +916,46 @@ export class StudentsService implements OnModuleInit {
             s.email,
             gradoLabel,
             `${s.apellido} ${s.nombre}`,
+            `${s.nombre} ${s.apellido}`,
           ]
             .join(' ')
             .toLowerCase();
-          return haystack.includes(query);
+          return tokens.every((t) => haystack.includes(t));
         })
       : students;
     return Promise.all(filtered.map((s) => this.buildExpediente(s)));
+  }
+
+  async getStudentsStats(): Promise<StudentsStatsDto> {
+    const [
+      total,
+      activos,
+      inactivos,
+      retirados,
+      matriculadosActivos,
+      mujeres,
+      varones,
+    ] = await Promise.all([
+      this.studentsRepository.count(),
+      this.studentsRepository.count({ where: { estadoMatricula: 'activo' } }),
+      this.studentsRepository.count({ where: { estadoMatricula: 'inactivo' } }),
+      this.studentsRepository.count({ where: { estadoMatricula: 'retirado' } }),
+      this.studentsRepository.count({
+        where: { activo: true, estadoMatricula: 'activo' },
+      }),
+      this.studentsRepository.count({ where: { sexo: 'F' } }),
+      this.studentsRepository.count({ where: { sexo: 'M' } }),
+    ]);
+
+    return {
+      total,
+      activos,
+      inactivos,
+      retirados,
+      matriculadosActivos,
+      mujeres,
+      varones,
+    };
   }
 
   async exportExpedientesCsv(filters?: {
@@ -809,15 +1351,39 @@ export class StudentsService implements OnModuleInit {
     const current = await this.getOrFail(id);
 
     if (dto.nombres !== undefined) current.nombre = dto.nombres.trim();
-    if (dto.apellidos !== undefined) current.apellido = dto.apellidos.trim();
+    if (
+      dto.apellidos !== undefined ||
+      dto.apellidoPaterno !== undefined ||
+      dto.apellidoMaterno !== undefined
+    ) {
+      const apellidos = resolveApellidos({
+        apellidos: dto.apellidos ?? current.apellido,
+        apellidoPaterno: dto.apellidoPaterno ?? current.apellidoPaterno,
+        apellidoMaterno: dto.apellidoMaterno ?? current.apellidoMaterno,
+      });
+      current.apellido = apellidos.apellido;
+      current.apellidoPaterno = apellidos.apellidoPaterno;
+      current.apellidoMaterno = apellidos.apellidoMaterno;
+    }
     if (dto.email !== undefined) current.email = dto.email.trim();
     if (dto.codigo !== undefined) current.codigo = dto.codigo.trim();
     if (dto.dni !== undefined) current.dni = dto.dni.trim();
+    if (dto.tipoDocumento !== undefined) {
+      current.tipoDocumento = dto.tipoDocumento.trim() || 'DNI';
+    }
     if (dto.fechaNac !== undefined) {
       current.fechaNac = dto.fechaNac.trim() || null;
     }
     if (dto.sexo !== undefined) current.sexo = dto.sexo;
     if (dto.direccion !== undefined) current.direccion = dto.direccion.trim();
+    if (dto.distrito !== undefined) current.distrito = dto.distrito.trim();
+    if (dto.provincia !== undefined) current.provincia = dto.provincia.trim();
+    if (dto.departamento !== undefined) {
+      current.departamento = dto.departamento.trim();
+    }
+    if (dto.telefonoEmergencia !== undefined) {
+      current.telefonoEmergencia = dto.telefonoEmergencia.trim();
+    }
     if (dto.foto !== undefined) current.foto = dto.foto.trim();
     if (dto.grupoSanguineo !== undefined) {
       current.grupoSanguineo = dto.grupoSanguineo.trim();
@@ -962,7 +1528,7 @@ export class StudentsService implements OnModuleInit {
   async findSectionChangeCandidates(
     nivel?: string,
     grado?: string,
-  ): Promise<ExpedienteResponse[]> {
+  ): Promise<SectionChangeCandidateResponse[]> {
     const students = await this.studentsRepository.find({
       where: {
         activo: true,
@@ -972,6 +1538,7 @@ export class StudentsService implements OnModuleInit {
       order: { apellido: 'ASC', nombre: 'ASC', id: 'ASC' },
     });
 
+    const docLookup = this.buildDocumentoLookupForSectionChange(students);
     const unicos = this.dedupeStudentsForSectionChange(students);
     const filtered = unicos.filter((s) => {
       if (nivel && s.nivel !== nivel) return false;
@@ -984,7 +1551,12 @@ export class StudentsService implements OnModuleInit {
       return true;
     });
 
-    return Promise.all(filtered.map((s) => this.buildExpediente(s)));
+    return filtered.map((s) =>
+      mapSectionChangeCandidate(
+        s,
+        this.resolveDocumentoForSectionChange(s, docLookup),
+      ),
+    );
   }
 
   async findSectionChanges(nivel?: string, grado?: string) {
@@ -1000,10 +1572,25 @@ export class StudentsService implements OnModuleInit {
     }
 
     const rows = await qb.getMany();
-    return rows.map((row) => ({
+    const studentIds = [...new Set(rows.map((row) => row.studentId))];
+    const students = studentIds.length
+      ? await this.studentsRepository.findBy({ id: In(studentIds) })
+      : [];
+    const docPorAlumno = new Map(
+      students.map((s) => [
+        s.id,
+        { dni: s.dni?.trim() ?? '', tipoDocumento: s.tipoDocumento?.trim() || 'DNI' },
+      ]),
+    );
+
+    return rows.map((row) => {
+      const doc = docPorAlumno.get(row.studentId);
+      return {
       id: row.id,
       studentId: row.studentId,
       estudiante: row.estudiante,
+      dni: doc?.dni ?? '',
+      tipoDocumento: doc?.tipoDocumento ?? 'DNI',
       nivel: row.nivel,
       grado: row.grado,
       seccionAnterior: row.seccionAnterior,
@@ -1015,7 +1602,8 @@ export class StudentsService implements OnModuleInit {
       anioEscolar: row.anioEscolar ?? row.createdAt.getFullYear(),
       estado: row.estado ?? 'completado',
       createdAt: row.createdAt.toISOString(),
-    }));
+    };
+    });
   }
 
   async changeSection(id: number, dto: ChangeSectionDto) {
@@ -1273,25 +1861,84 @@ export class StudentsService implements OnModuleInit {
     ].join('|');
   }
 
+  private nombreEnAulaKey(student: Student): string {
+    return [
+      student.apellido.trim().toLowerCase(),
+      student.nombre.trim().toLowerCase(),
+      student.nivel.trim().toLowerCase(),
+      normalizeGradoMatricula(student.grado).toLowerCase(),
+      student.seccion.trim().toUpperCase(),
+    ].join('|');
+  }
+
+  private pickCanonicalStudentForDedupe(prev: Student, next: Student): Student {
+    const score = (s: Student) =>
+      (s.dni?.trim() ? 8 : 0) +
+      (s.email?.match(/^alumno\.(.+)@estudiante\.pe$/i) ? 4 : 0) +
+      (s.codigo?.trim() ? 4 : 0) +
+      (s.apellidoPaterno?.trim() ? 2 : 0) +
+      (s.tipoDocumento?.trim() ? 1 : 0);
+    const prevScore = score(prev);
+    const nextScore = score(next);
+    if (nextScore !== prevScore) return nextScore > prevScore ? next : prev;
+    return next.id < prev.id ? next : prev;
+  }
+
+  private buildDocumentoLookupForSectionChange(
+    students: Student[],
+  ): Map<string, { dni: string; tipoDocumento: string }> {
+    const map = new Map<string, { dni: string; tipoDocumento: string }>();
+    for (const s of students) {
+      let dni = s.dni?.trim() ?? '';
+      if (!dni) {
+        dni =
+          s.email?.match(/^alumno\.(.+)@estudiante\.pe$/i)?.[1]?.trim() ?? '';
+      }
+      if (!dni) continue;
+      const entry = {
+        dni,
+        tipoDocumento: s.tipoDocumento?.trim() || 'DNI',
+      };
+      map.set(this.matriculaIdentityKey(s), entry);
+      const aulaKey = this.nombreEnAulaKey(s);
+      if (!map.has(aulaKey)) map.set(aulaKey, entry);
+    }
+    return map;
+  }
+
+  private resolveDocumentoForSectionChange(
+    student: Student,
+    lookup: Map<string, { dni: string; tipoDocumento: string }>,
+  ): { dni: string; tipoDocumento: string } | null {
+    if (student.dni?.trim()) return null;
+    return (
+      lookup.get(this.matriculaIdentityKey(student)) ??
+      lookup.get(this.nombreEnAulaKey(student)) ??
+      null
+    );
+  }
+
   private dedupeStudentsForSectionChange(students: Student[]): Student[] {
     const byIdentity = new Map<string, Student>();
     for (const s of students) {
       const key = this.matriculaIdentityKey(s);
       const prev = byIdentity.get(key);
-      if (!prev || s.id < prev.id) byIdentity.set(key, s);
+      if (!prev) {
+        byIdentity.set(key, s);
+      } else {
+        byIdentity.set(key, this.pickCanonicalStudentForDedupe(prev, s));
+      }
     }
 
     const byNombreEnAula = new Map<string, Student>();
     for (const s of byIdentity.values()) {
-      const key = [
-        s.apellido.trim().toLowerCase(),
-        s.nombre.trim().toLowerCase(),
-        s.nivel.trim().toLowerCase(),
-        normalizeGradoMatricula(s.grado).toLowerCase(),
-        s.seccion.trim().toUpperCase(),
-      ].join('|');
+      const key = this.nombreEnAulaKey(s);
       const prev = byNombreEnAula.get(key);
-      if (!prev || s.id < prev.id) byNombreEnAula.set(key, s);
+      if (!prev) {
+        byNombreEnAula.set(key, s);
+      } else {
+        byNombreEnAula.set(key, this.pickCanonicalStudentForDedupe(prev, s));
+      }
     }
 
     return [...byNombreEnAula.values()];

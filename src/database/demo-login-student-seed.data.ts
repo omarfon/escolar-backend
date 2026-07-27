@@ -1,3 +1,4 @@
+/** Alumno demo login — cargar con npm run db:demo-student o db:demo-student-catalog. La API solo lee BD. */
 /** Alumno vinculado al usuario demo de login (username: estudiante). */
 export const DEMO_LOGIN_STUDENT_EMAIL = 'estudiante@escolar.pe';
 

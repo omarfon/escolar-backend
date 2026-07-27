@@ -28,11 +28,18 @@ export interface ExpedienteResponse {
   codigo: string;
   nombres: string;
   apellidos: string;
+  apellidoPaterno: string;
+  apellidoMaterno: string;
   dni: string;
+  tipoDocumento: string;
   email: string;
   fechaNac: string;
   sexo: 'M' | 'F';
   direccion: string;
+  distrito: string;
+  provincia: string;
+  departamento: string;
+  telefonoEmergencia: string;
   foto: string;
   grupoSanguineo: string;
   alergias: string;
@@ -53,6 +60,55 @@ export interface ExpedienteResponse {
   asistenciaPct: number;
   conductaNota: string;
   documentos: ExpedienteDocumento[];
+}
+
+export interface SectionChangeCandidateResponse {
+  id: number;
+  codigo: string;
+  nombres: string;
+  apellidos: string;
+  apellidoPaterno: string;
+  apellidoMaterno: string;
+  dni: string;
+  tipoDocumento: string;
+  email: string;
+  nivel: string;
+  grado: string;
+  seccion: string;
+  activo: boolean;
+  estado: 'activo' | 'inactivo' | 'retirado';
+}
+
+export function mapSectionChangeCandidate(
+  student: Student,
+  documento?: { dni: string; tipoDocumento: string } | null,
+): SectionChangeCandidateResponse {
+  let dni = student.dni?.trim() || documento?.dni?.trim() || '';
+  if (!dni) {
+    const fromEmail = student.email?.match(/^alumno\.(.+)@estudiante\.pe$/i)?.[1];
+    if (fromEmail) dni = fromEmail.trim();
+  }
+  const tipoDocumento =
+    student.tipoDocumento?.trim() || documento?.tipoDocumento?.trim() || 'DNI';
+
+  return {
+    id: student.id,
+    codigo: buildCodigo(student.id, student.codigo),
+    nombres: student.nombre,
+    apellidos:
+      student.apellido ||
+      [student.apellidoPaterno, student.apellidoMaterno].filter(Boolean).join(' '),
+    apellidoPaterno: student.apellidoPaterno ?? '',
+    apellidoMaterno: student.apellidoMaterno ?? '',
+    dni,
+    tipoDocumento,
+    email: student.email,
+    nivel: student.nivel,
+    grado: gradoLabelFromParts(student.nivel, student.grado),
+    seccion: student.seccion,
+    activo: student.activo,
+    estado: student.estadoMatricula ?? (student.activo ? 'activo' : 'inactivo'),
+  };
 }
 
 export function gradoLabelFromParts(nivel: string, grado: string): string {
@@ -120,9 +176,16 @@ export function normalizeRepresentante(
   data?: Partial<RepresentanteData> | null,
 ): RepresentanteData {
   if (!data) return { ...REPRESENTANTE_VACIO };
+  const paterno = data.apellidoPaterno?.trim() ?? '';
+  const materno = data.apellidoMaterno?.trim() ?? '';
+  const apellidos =
+    [paterno, materno].filter(Boolean).join(' ') || (data.apellidos?.trim() ?? '');
   return {
     nombres: data.nombres?.trim() ?? '',
-    apellidos: data.apellidos?.trim() ?? '',
+    apellidos,
+    apellidoPaterno: paterno,
+    apellidoMaterno: materno,
+    tipoDocumento: data.tipoDocumento?.trim() || 'DNI',
     dni: data.dni?.trim() ?? '',
     telefono: data.telefono?.trim() ?? '',
     email: data.email?.trim() ?? '',
@@ -134,6 +197,36 @@ export function buildCodigo(id: number, codigo?: string): string {
   if (codigo?.trim()) return codigo.trim();
   const year = new Date().getFullYear();
   return `${year}-${String(id).padStart(3, '0')}`;
+}
+
+export function resolveApellidos(dto: {
+  apellidos?: string;
+  apellidoPaterno?: string;
+  apellidoMaterno?: string;
+}): { apellido: string; apellidoPaterno: string; apellidoMaterno: string } {
+  const paterno = dto.apellidoPaterno?.trim() ?? '';
+  const materno = dto.apellidoMaterno?.trim() ?? '';
+  const combined = [paterno, materno].filter(Boolean).join(' ');
+
+  if (combined) {
+    return { apellido: combined, apellidoPaterno: paterno, apellidoMaterno: materno };
+  }
+
+  const apellido = dto.apellidos?.trim() ?? '';
+  if (!apellido) {
+    return { apellido: '', apellidoPaterno: '', apellidoMaterno: '' };
+  }
+
+  const parts = apellido.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      apellido,
+      apellidoPaterno: parts[0],
+      apellidoMaterno: parts.slice(1).join(' '),
+    };
+  }
+
+  return { apellido, apellidoPaterno: apellido, apellidoMaterno: '' };
 }
 
 export function toExpedienteResponse(
@@ -148,12 +241,21 @@ export function toExpedienteResponse(
     id: student.id,
     codigo: buildCodigo(student.id, student.codigo),
     nombres: student.nombre,
-    apellidos: student.apellido,
+    apellidos:
+      student.apellido ||
+      [student.apellidoPaterno, student.apellidoMaterno].filter(Boolean).join(' '),
+    apellidoPaterno: student.apellidoPaterno ?? '',
+    apellidoMaterno: student.apellidoMaterno ?? '',
     dni: student.dni ?? '',
+    tipoDocumento: student.tipoDocumento ?? 'DNI',
     email: student.email,
     fechaNac: student.fechaNac ?? '',
     sexo: student.sexo ?? 'M',
     direccion: student.direccion ?? '',
+    distrito: student.distrito ?? '',
+    provincia: student.provincia ?? '',
+    departamento: student.departamento ?? '',
+    telefonoEmergencia: student.telefonoEmergencia ?? '',
     foto: student.foto ?? '',
     grupoSanguineo: student.grupoSanguineo ?? 'O+',
     alergias: student.alergias ?? '',

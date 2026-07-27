@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { MailModule } from '../mail/mail.module';
 import { StudentsModule } from '../students/students.module';
 import { MaestrosModule } from '../maestros/maestros.module';
 import { AttendancesService } from './attendances.service';
 import { AttendancesController } from './attendances.controller';
 import { AttendanceAlertSettings } from './entities/attendance-alert-settings.entity';
+import { AttendanceAlertNotification } from './entities/attendance-alert-notification.entity';
 import { AttendanceJustification } from './entities/attendance-justification.entity';
 import { Attendance } from './entities/attendance.entity';
 
@@ -14,9 +16,11 @@ import { Attendance } from './entities/attendance.entity';
       Attendance,
       AttendanceJustification,
       AttendanceAlertSettings,
+      AttendanceAlertNotification,
     ]),
     StudentsModule,
     MaestrosModule,
+    MailModule,
   ],
   controllers: [AttendancesController],
   providers: [AttendancesService],

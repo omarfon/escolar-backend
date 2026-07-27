@@ -205,11 +205,7 @@ export class HorariosService {
       assignments,
     );
 
-    const conflictos = this.detectConflicts(
-      blocks,
-      docMap,
-      assignments,
-    );
+    const conflictos = this.detectConflicts(blocks, docMap);
 
     const gestion = this.buildGestion(
       salonesItems,
@@ -386,9 +382,10 @@ export class HorariosService {
   private detectConflicts(
     blocks: HorarioBlockResponse[],
     docMap: Map<number, HorarioDocenteItem>,
-    assignments: CurriculumTeacherAssignment[],
   ): HorarioConflictoItem[] {
     const result: HorarioConflictoItem[] = [];
+    const aulaKey = (b: HorarioBlockResponse) =>
+      `${b.nivel}|${b.grado}|${b.seccion}`;
 
     const byDocSlot = new Map<string, HorarioBlockResponse[]>();
     for (const b of blocks) {
@@ -399,45 +396,25 @@ export class HorariosService {
 
     for (const [key, entradas] of byDocSlot.entries()) {
       if (entradas.length <= 1) continue;
-      const [docIdStr, diaStr, perStr] = key.split('-');
-      const docenteId = +docIdStr;
+      const aulas = new Set(entradas.map(aulaKey));
+      if (aulas.size < 2) continue;
+
+      const parts = key.split('-');
+      const periodoId = +parts.pop()!;
+      const dia = +parts.pop()!;
+      const docenteId = +parts.join('-');
       const doc = docMap.get(docenteId);
       result.push({
         key,
         tipo: 'docente_solapado',
-        dia: +diaStr,
-        periodoId: +perStr,
+        dia,
+        periodoId,
         docenteId,
         docNombre: doc
           ? `${doc.apellidos}, ${doc.nombres}`
           : `Docente #${docenteId}`,
         entradas,
       });
-    }
-
-    for (const b of blocks) {
-      const valid = assignments.some(
-        (a) =>
-          a.docenteId === b.docenteId &&
-          a.cursoId === b.cursoId &&
-          a.nivel === b.nivel &&
-          a.grado === b.grado &&
-          a.secciones.includes(b.seccion),
-      );
-      if (!valid) {
-        const doc = docMap.get(b.docenteId);
-        result.push({
-          key: `asig-${b.id}`,
-          tipo: 'asignacion_invalida',
-          dia: b.dia,
-          periodoId: b.periodoId,
-          docenteId: b.docenteId,
-          docNombre: doc
-            ? `${doc.apellidos}, ${doc.nombres}`
-            : `Docente #${b.docenteId}`,
-          entradas: [b],
-        });
-      }
     }
 
     return result;

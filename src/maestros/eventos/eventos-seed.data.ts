@@ -1,6 +1,6 @@
 import { EventoTipo } from '../../events/entities/evento.entity';
 
-/** Catálogo inicial (database-seed.service.ts — seedEvents) */
+/** Catálogo demo — cargar con npm run db:events-data o db:demo-student-catalog / db:seed. La API solo lee BD. */
 export const MAESTRO_EVENTOS_SEED: Array<{
   titulo: string;
   descripcion: string;

@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { CreateParentJustificationDto } from './dto/create-parent-justification.dto';
 import { SendParentTeacherMessageDto } from './dto/send-parent-teacher-message.dto';
 import { ParentsService } from './parents.service';
@@ -157,11 +158,31 @@ export class ParentsController {
   }
 
   @Post('children/:studentId/justifications')
+  @UseInterceptors(FilesInterceptor('adjuntos', 5))
   createJustification(
     @Param('studentId') studentId: string,
     @Query('email') email: string,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body() dto: CreateParentJustificationDto,
   ) {
-    return this.parentsService.createJustification(+studentId, email, dto);
+    return this.parentsService.createJustification(
+      +studentId,
+      email,
+      dto,
+      files ?? [],
+    );
+  }
+
+  @Post('children/:studentId/absence-alerts/:alertId/read')
+  markAbsenceAlertRead(
+    @Param('studentId') studentId: string,
+    @Param('alertId') alertId: string,
+    @Query('email') email: string,
+  ) {
+    return this.parentsService.markAbsenceAlertRead(
+      +studentId,
+      email ?? '',
+      +alertId,
+    );
   }
 }

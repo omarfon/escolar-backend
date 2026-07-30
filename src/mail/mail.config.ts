@@ -16,10 +16,19 @@ export interface MailEnvConfig {
 
 export type MailTransportMode = 'smtp' | 'ethereal' | 'off';
 
+export function isSendGridHost(host: string): boolean {
+  return host.toLowerCase().includes('sendgrid');
+}
+
 export function readMailEnv(config: ConfigService): MailEnvConfig {
   const user = (config.get<string>('MAIL_USER') ?? '').trim();
   const pass = (config.get<string>('MAIL_PASS') ?? '').trim();
-  const from = (config.get<string>('MAIL_FROM') ?? '').trim() || user;
+  const host = (config.get<string>('SMTP_HOST') ?? '').trim();
+  const fromExplicit = (config.get<string>('MAIL_FROM') ?? '').trim();
+  // SendGrid: MAIL_USER suele ser "apikey"; el remitente real va en MAIL_FROM (verificado en SendGrid).
+  const from =
+    fromExplicit ||
+    (isSendGridHost(host) && user.toLowerCase() === 'apikey' ? '' : user);
   const replyTo = (config.get<string>('MAIL_REPLY_TO') ?? '').trim() || from;
   const devFallbackRaw = (config.get<string>('MAIL_DEV_FALLBACK') ?? 'ethereal')
     .trim()
@@ -27,7 +36,7 @@ export function readMailEnv(config: ConfigService): MailEnvConfig {
 
   return {
     enabled: config.get<string>('MAIL_ENABLED', 'true') !== 'false',
-    host: (config.get<string>('SMTP_HOST') ?? '').trim(),
+    host,
     port: Number(config.get<string>('SMTP_PORT', '587')),
     user,
     pass,

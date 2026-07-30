@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post } from '@nestjs/common';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { MailService } from './mail.service';
 import { SendTestMailDto } from './dto/send-test-mail.dto';
@@ -21,8 +21,13 @@ export class MailController {
   @Post('test')
   async sendTest(@Body() dto: SendTestMailDto) {
     const to = dto.to?.trim() || this.mailService.getDefaultTestRecipient();
-    const result = await this.mailService.sendTest(to);
-    const verify = await this.mailService.verifyConnection();
-    return { ...result, verify, to };
+    try {
+      const result = await this.mailService.sendTest(to);
+      const verify = await this.mailService.verifyConnection();
+      return { ...result, verify, to };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error al enviar correo de prueba';
+      throw new BadRequestException(message);
+    }
   }
 }

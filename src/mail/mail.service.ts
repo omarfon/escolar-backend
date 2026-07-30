@@ -129,8 +129,15 @@ export class MailService implements OnModuleInit {
       return { sent: false, simulated: true, mode: this.mode };
     }
 
+    const from = this.formatFrom();
+    if (!from || from.includes('<apikey>') || from.includes('<>')) {
+      throw new Error(
+        'Configure MAIL_FROM con un correo verificado en SendGrid (Settings → Sender Authentication).',
+      );
+    }
+
     const info = await this.transporter.sendMail({
-      from: this.formatFrom(),
+      from,
       to,
       replyTo: options.replyTo ?? this.mailConfig.replyTo,
       subject: options.subject,

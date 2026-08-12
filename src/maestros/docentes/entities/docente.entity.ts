@@ -30,6 +30,9 @@ export class Docente {
   @Column({ length: 30, default: '' })
   telefono: string;
 
+  @Column({ length: 200, default: '' })
+  direccion: string;
+
   @Column({ length: 80, default: 'Sede Central' })
   sede: string;
 

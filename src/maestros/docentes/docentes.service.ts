@@ -16,6 +16,7 @@ import { CurriculumSubject } from '../../curricula/entities/curriculum-subject.e
 import { Salon } from '../salones/entities/salon.entity';
 import { normalizeGradoMatricula } from '../salones/salones.util';
 import { CreateDocenteDto, UpdateDocenteDto } from './dto/docente.dto';
+import { UpdateMiPerfilDocenteDto } from './dto/update-mi-perfil-docente.dto';
 import {
   Docente,
   abrevDocente,
@@ -67,6 +68,7 @@ export interface DocenteListItem {
   email: string;
   username: string;
   telefono: string;
+  direccion: string;
   sede: string;
   estado: string;
   especialidad: string;
@@ -270,29 +272,53 @@ export class DocentesMaestrosService implements OnModuleInit {
 
   async getMiPerfil(
     userId: number,
+    username?: string,
     anioEscolar?: number,
   ): Promise<DocenteDetail> {
-    const docente = await this.docenteRepo.findOne({ where: { userId } });
-    if (!docente) {
-      throw new NotFoundException(
-        'No se encontró un perfil docente vinculado a este usuario',
+    const docente = await this.findDocenteForUser(userId, username);
+    return this.findOne(docente.id, anioEscolar);
+  }
+
+  async updateMiPerfil(
+    userId: number,
+    username: string | undefined,
+    dto: UpdateMiPerfilDocenteDto,
+    anioEscolar?: number,
+  ): Promise<DocenteDetail> {
+    if (dto.telefono === undefined && dto.direccion === undefined) {
+      throw new BadRequestException(
+        'Debe enviar al menos teléfono o dirección para actualizar',
       );
     }
+
+    const docente = await this.findDocenteForUser(userId, username);
+
+    if (dto.telefono !== undefined) {
+      docente.telefono = dto.telefono.trim();
+    }
+    if (dto.direccion !== undefined) {
+      docente.direccion = dto.direccion.trim();
+    }
+
+    await this.docenteRepo.save(docente);
+
+    if (docente.userId && dto.telefono !== undefined) {
+      const user = await this.usersRepo.findOneBy({ id: docente.userId });
+      if (user) {
+        user.telefono = docente.telefono;
+        await this.usersRepo.save(user);
+      }
+    }
+
     return this.findOne(docente.id, anioEscolar);
   }
 
   async getMiAula(
     userId: number,
+    username?: string,
     anioEscolar?: number,
   ): Promise<PortalDocenteMiAulaResponse> {
-    const docente = await this.docenteRepo.findOne({
-      where: { userId, estado: 'activo' },
-    });
-    if (!docente) {
-      throw new NotFoundException(
-        'No hay un docente activo vinculado a este usuario',
-      );
-    }
+    const docente = await this.findDocenteForUser(userId, username, true);
 
     const anio = anioEscolar ?? new Date().getFullYear();
     const detail = await this.findOne(docente.id, anio);
@@ -394,20 +420,7 @@ export class DocentesMaestrosService implements OnModuleInit {
     username?: string,
     anioEscolar?: number,
   ): Promise<DocenteMisSalonesResponse> {
-    let docente = await this.docenteRepo.findOne({ where: { userId } });
-    if (!docente && username) {
-      docente = await this.docenteRepo.findOne({
-        where: { username: username.trim() },
-      });
-    }
-    if (!docente) {
-      throw new NotFoundException(
-        'No se encontró un perfil docente vinculado a este usuario',
-      );
-    }
-    if (docente.estado !== 'activo') {
-      throw new BadRequestException('El docente no está activo');
-    }
+    const docente = await this.findDocenteForUser(userId, username, true);
 
     const anio = anioEscolar ?? new Date().getFullYear();
     const [detail] = await this.enrichDocentes([docente], anio);
@@ -474,6 +487,7 @@ export class DocentesMaestrosService implements OnModuleInit {
         email: savedUser.email,
         username: savedUser.username,
         telefono: savedUser.telefono,
+        direccion: dto.direccion?.trim() ?? '',
         sede: savedUser.sede,
         estado: savedUser.estado as Docente['estado'],
         especialidad,
@@ -497,6 +511,7 @@ export class DocentesMaestrosService implements OnModuleInit {
     if (dto.email !== undefined) current.email = dto.email.trim().toLowerCase();
     if (dto.username !== undefined) current.username = dto.username.trim();
     if (dto.telefono !== undefined) current.telefono = dto.telefono.trim();
+    if (dto.direccion !== undefined) current.direccion = dto.direccion.trim();
     if (dto.sede !== undefined) current.sede = dto.sede.trim();
     if (dto.estado !== undefined) current.estado = dto.estado;
     if (dto.especialidad !== undefined) {
@@ -565,6 +580,39 @@ export class DocentesMaestrosService implements OnModuleInit {
     if (docente.estado !== 'activo') {
       throw new BadRequestException('El docente seleccionado no está activo');
     }
+    return docente;
+  }
+
+  /** Resuelve el docente del usuario logueado (userId o username de login). */
+  private async findDocenteForUser(
+    userId: number,
+    username?: string,
+    activoOnly = false,
+  ): Promise<Docente> {
+    let docente = await this.docenteRepo.findOne({
+      where: activoOnly ? { userId, estado: 'activo' } : { userId },
+    });
+
+    if (!docente && username?.trim()) {
+      docente = await this.docenteRepo.findOne({
+        where: activoOnly
+          ? { username: username.trim(), estado: 'activo' }
+          : { username: username.trim() },
+      });
+      if (docente && userId && !docente.userId) {
+        docente.userId = userId;
+        await this.docenteRepo.save(docente);
+      }
+    }
+
+    if (!docente) {
+      throw new NotFoundException(
+        activoOnly
+          ? 'No hay un docente activo vinculado a este usuario'
+          : 'No se encontró un perfil docente vinculado a este usuario',
+      );
+    }
+
     return docente;
   }
 
@@ -691,6 +739,7 @@ export class DocentesMaestrosService implements OnModuleInit {
       email: docente.email,
       username: docente.username,
       telefono: docente.telefono,
+      direccion: docente.direccion ?? '',
       sede: docente.sede,
       estado: docente.estado,
       especialidad: docente.especialidad || 'Docente',

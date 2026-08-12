@@ -7,7 +7,7 @@ import { RequireRole } from '../auth/decorators/require-role.decorator';
 import { PayVisaDto } from '../treasury/dto/pay-visa.dto';
 
 @Controller('parents')
-@RequireRole('PADRE', 'ADMIN')
+@RequireRole('PADRE')
 export class ParentsController {
   constructor(private readonly parentsService: ParentsService) {}
 

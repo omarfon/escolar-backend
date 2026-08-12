@@ -8,6 +8,9 @@
 
 BEGIN;
 
+-- Columna direccion (perfil editable del portal docente)
+ALTER TABLE docentes ADD COLUMN IF NOT EXISTS direccion VARCHAR(200) NOT NULL DEFAULT '';
+
 -- ─── 0. Tabla docentes (si TypeORM aún no la creó) ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS docentes (
@@ -19,6 +22,7 @@ CREATE TABLE IF NOT EXISTS docentes (
   email VARCHAR(120) NOT NULL UNIQUE,
   username VARCHAR(50) NOT NULL UNIQUE,
   telefono VARCHAR(30) NOT NULL DEFAULT '',
+  direccion VARCHAR(200) NOT NULL DEFAULT '',
   sede VARCHAR(80) NOT NULL DEFAULT 'Sede Central',
   estado VARCHAR(10) NOT NULL DEFAULT 'activo',
   especialidad VARCHAR(120) NOT NULL DEFAULT '',

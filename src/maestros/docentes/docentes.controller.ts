@@ -15,6 +15,7 @@ import { RequirePermiso } from '../../auth/decorators/require-permiso.decorator'
 import { RequireRole } from '../../auth/decorators/require-role.decorator';
 import { RequestUser } from '../../auth/interfaces/request-user.interface';
 import { CreateDocenteDto, UpdateDocenteDto } from './dto/docente.dto';
+import { UpdateMiPerfilDocenteDto } from './dto/update-mi-perfil-docente.dto';
 import { DocentesMaestrosService } from './docentes.service';
 
 type AuthRequest = Request & { user?: RequestUser };
@@ -48,7 +49,7 @@ export class DocentesMaestrosController {
 
   @Get('me/perfil')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   getMiPerfil(
     @Req() req: AuthRequest,
     @Query('anioEscolar') anioEscolar?: string,
@@ -56,13 +57,14 @@ export class DocentesMaestrosController {
     const userId = +(req.user?.id ?? 0);
     return this.docentesService.getMiPerfil(
       userId,
+      req.user?.username,
       anioEscolar ? Number(anioEscolar) : undefined,
     );
   }
 
   @Get('me/salones')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   findMySalones(
     @Req() req: { user: RequestUser },
     @Query('anioEscolar') anioEscolar?: string,
@@ -77,7 +79,7 @@ export class DocentesMaestrosController {
 
   @Get('me/mi-aula')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   getMiAula(
     @Req() req: AuthRequest,
     @Query('anioEscolar') anioEscolar?: string,
@@ -85,6 +87,24 @@ export class DocentesMaestrosController {
     const userId = +(req.user?.id ?? 0);
     return this.docentesService.getMiAula(
       userId,
+      req.user?.username,
+      anioEscolar ? Number(anioEscolar) : undefined,
+    );
+  }
+
+  @Patch('me/perfil')
+  @RequirePermiso()
+  @RequireRole('DOCENTE')
+  updateMiPerfil(
+    @Req() req: AuthRequest,
+    @Body() dto: UpdateMiPerfilDocenteDto,
+    @Query('anioEscolar') anioEscolar?: string,
+  ) {
+    const userId = +(req.user?.id ?? 0);
+    return this.docentesService.updateMiPerfil(
+      userId,
+      req.user?.username,
+      dto,
       anioEscolar ? Number(anioEscolar) : undefined,
     );
   }

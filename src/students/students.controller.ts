@@ -150,7 +150,7 @@ export class StudentsController {
 
   @Get('me')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findMe(@Req() req: AuthRequest) {
     const login = req.user?.username ?? '';
     return this.studentsService.findMeByLogin(login);
@@ -158,7 +158,7 @@ export class StudentsController {
 
   @Get('me/profile')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findMeProfile(@Req() req: AuthRequest) {
     const login = req.user?.username ?? '';
     return this.studentsService.findMeProfileByLogin(login);
@@ -166,7 +166,7 @@ export class StudentsController {
 
   @Get('me/contactos')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findMeContactos(
     @Req() req: AuthRequest,
     @Query('anioEscolar') anioEscolar?: string,
@@ -178,7 +178,7 @@ export class StudentsController {
 
   @Get('me/attendance')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findMeAttendance(
     @Req() req: AuthRequest,
     @Query('anioEscolar') anioEscolar?: string,
@@ -190,7 +190,7 @@ export class StudentsController {
 
   @Get('me/grades')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findMeGrades(
     @Req() req: AuthRequest,
     @Query('anioEscolar') anioEscolar?: string,

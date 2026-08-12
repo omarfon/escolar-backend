@@ -127,6 +127,8 @@ export interface FaltaPendienteDetalle {
   fecha: string;
   fechaLabel: string;
   observacion?: string;
+  /** Días restantes para justificar (0 = último día de plazo). */
+  diasRestantes: number;
 }
 
 export interface PendingJustificationResponse {
@@ -139,6 +141,8 @@ export interface PendingJustificationResponse {
   faltasJustificadas: number;
   totalFaltas: number;
   ultimaFalta: string | null;
+  /** Faltas injustificadas cuyo plazo de 5 días ya venció. */
+  faltasFueraDePlazo: number;
   faltasPendientes: FaltaPendienteDetalle[];
 }
 
@@ -257,6 +261,8 @@ export interface ControlReportResponse {
 
 @Injectable()
 export class AttendancesService {
+  /** Plazo máximo (días calendario) para justificar una falta después de ocurrida. */
+  static readonly DIAS_PLAZO_JUSTIFICACION = 5;
   private readonly logger = new Logger(AttendancesService.name);
 
   constructor(
@@ -679,9 +685,14 @@ export class AttendancesService {
     for (const student of students) {
       const records = byStudent.get(student.id) ?? [];
       const stats = this.computeAbsenceStats(records);
-      if (stats.faltasInjustificadas === 0) continue;
-
       const faltasPendientes = this.mapPendingAbsenceDetails(records);
+      const faltasFueraDePlazo = records.filter(
+        (a) =>
+          a.estado === 'F' &&
+          !this.isWithinJustificationDeadline(this.normalizeFechaKey(a.fecha)),
+      ).length;
+
+      if (faltasPendientes.length === 0) continue;
 
       result.push({
         studentId: student.id,
@@ -689,10 +700,13 @@ export class AttendancesService {
         nivel: student.nivel,
         grado: student.grado,
         seccion: student.seccion,
-        faltasSinJustificar: stats.faltasInjustificadas,
+        faltasSinJustificar: faltasPendientes.length,
         faltasJustificadas: stats.faltasJustificadas,
         totalFaltas: stats.faltasInjustificadas + stats.faltasJustificadas,
-        ultimaFalta: stats.ultimaFalta,
+        ultimaFalta:
+          faltasPendientes[faltasPendientes.length - 1]?.fechaLabel ??
+          stats.ultimaFalta,
+        faltasFueraDePlazo,
         faltasPendientes,
       });
     }
@@ -1522,15 +1536,65 @@ export class AttendancesService {
   }
 
   private mapPendingAbsenceDetails(records: Attendance[]): FaltaPendienteDetalle[] {
+    const hoy = this.todayIso();
     return records
-      .filter((a) => a.estado === 'F')
-      .map((a) => ({
-        id: a.id,
-        fecha: this.normalizeFechaKey(a.fecha),
-        fechaLabel: this.formatDate(this.normalizeFechaKey(a.fecha)),
-        observacion: a.observacion ?? undefined,
-      }))
+      .filter(
+        (a) =>
+          a.estado === 'F' &&
+          this.isWithinJustificationDeadline(this.normalizeFechaKey(a.fecha), hoy),
+      )
+      .map((a) => {
+        const fecha = this.normalizeFechaKey(a.fecha);
+        const diasTranscurridos = this.daysSinceDate(fecha, hoy);
+        return {
+          id: a.id,
+          fecha,
+          fechaLabel: this.formatDate(fecha),
+          observacion: a.observacion ?? undefined,
+          diasRestantes: Math.max(
+            0,
+            AttendancesService.DIAS_PLAZO_JUSTIFICACION - diasTranscurridos,
+          ),
+        };
+      })
       .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  }
+
+  private isWithinJustificationDeadline(
+    fechaIso: string,
+    refIso: string = this.todayIso(),
+  ): boolean {
+    return (
+      this.daysSinceDate(fechaIso, refIso) <=
+      AttendancesService.DIAS_PLAZO_JUSTIFICACION
+    );
+  }
+
+  private oldestJustifiableDateIso(refIso: string = this.todayIso()): string {
+    return this.shiftDate(refIso, -AttendancesService.DIAS_PLAZO_JUSTIFICACION);
+  }
+
+  private assertJustificationDeadline(absences: Attendance[]): void {
+    const hoy = this.todayIso();
+    const vencidas = absences.filter(
+      (a) =>
+        !this.isWithinJustificationDeadline(this.normalizeFechaKey(a.fecha), hoy),
+    );
+    if (!vencidas.length) return;
+
+    const fechas = vencidas
+      .map((a) => this.formatDate(this.normalizeFechaKey(a.fecha)))
+      .join(', ');
+    throw new BadRequestException(
+      `Solo se puede justificar una falta hasta ${AttendancesService.DIAS_PLAZO_JUSTIFICACION} días después de ocurrida. Plazo vencido para: ${fechas}`,
+    );
+  }
+
+  private daysSinceDate(fechaIso: string, refIso: string): number {
+    const inicio = parseCalendarDate(fechaIso);
+    const fin = parseCalendarDate(refIso);
+    const msPorDia = 24 * 60 * 60 * 1000;
+    return Math.floor((fin.getTime() - inicio.getTime()) / msPorDia);
   }
 
   private async resolveJustifiableAbsences(
@@ -1556,6 +1620,8 @@ export class AttendancesService {
         this.assertAbsencesWithinMes(absences, dto.mes);
       }
 
+      this.assertJustificationDeadline(absences);
+
       if (dto.cantidad !== absences.length) {
         throw new BadRequestException(
           'La cantidad debe coincidir con las faltas seleccionadas de BD',
@@ -1565,10 +1631,12 @@ export class AttendancesService {
       return absences;
     }
 
+    const fechaMin = this.oldestJustifiableDateIso();
     const qb = this.attendancesRepository
       .createQueryBuilder('a')
       .where('a.studentId = :studentId', { studentId: dto.studentId })
-      .andWhere("a.estado = 'F'");
+      .andWhere("a.estado = 'F'")
+      .andWhere('a.fecha >= :fechaMin', { fechaMin });
 
     if (dto.mes?.trim()) {
       const bounds = this.resolveMesBounds(dto.mes);
@@ -1588,9 +1656,11 @@ export class AttendancesService {
         ? ` en ${dto.mes.slice(0, 7)}`
         : '';
       throw new BadRequestException(
-        `Solo hay ${absences.length} falta(s) sin justificar${scope} para este estudiante`,
+        `Solo hay ${absences.length} falta(s) sin justificar dentro del plazo de ${AttendancesService.DIAS_PLAZO_JUSTIFICACION} días${scope} para este estudiante`,
       );
     }
+
+    this.assertJustificationDeadline(absences);
 
     return absences.reverse();
   }

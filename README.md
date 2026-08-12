@@ -12,29 +12,50 @@ Backend API para integrar el frontend `escolar`.
 
 ## Variables de entorno
 
-Copia `.env.example` a `.env` y ajusta los valores:
+Copia `.env.example` a `.env`. Para Docker local use **127.0.0.1** (no `localhost`, evita problemas IPv6 en Windows):
 
 ```bash
 PORT=3000
-DB_HOST=localhost
-DB_PORT=5432
+DB_HOST=127.0.0.1
+DB_PORT=5433
 DB_USER=postgres
 DB_PASSWORD=postgres
 DB_NAME=escolar
 ```
 
-## Levantar PostgreSQL (opcional con Docker)
+## Levantar PostgreSQL (Docker)
+
+1. Abra **Docker Desktop** y espere a que muestre **Running**.
+2. En la raíz del backend:
 
 ```bash
-docker compose up -d
+npm run db:up
 ```
+
+Comandos útiles:
+
+| Comando | Descripción |
+|---------|-------------|
+| `npm run db:up` | Levanta PostgreSQL y espera conexión |
+| `npm run db:down` | Detiene el contenedor |
+| `npm run db:reset` | Borra volumen y crea BD limpia |
+| `npm run db:logs` | Logs del contenedor |
+| `npm run db:wait` | Solo espera a que PostgreSQL responda |
+
+### Si Docker o la BD no conectan
+
+- Error `Connection terminated unexpectedly`: Docker suele estar colgado. **Reinicie Docker Desktop** (clic derecho en el icono → Restart), luego `npm run db:reset`.
+- Si `docker compose` no responde: cierre Docker Desktop desde el administrador de tareas y ábralo de nuevo.
+- Verifique el puerto: `netstat -ano | findstr :5433` debe mostrar `com.docker.backend.exe`.
 
 ## Ejecutar backend
 
 ```bash
 npm install
-npm run start:dev
+npm run start:dev:db
 ```
+
+O por separado: `npm run db:up` y luego `npm run start:dev`.
 
 ## Endpoints principales
 

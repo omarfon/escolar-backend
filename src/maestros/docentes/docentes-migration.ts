@@ -5,10 +5,25 @@ import {
   tipoFromEspecialidad,
 } from './entities/docente.entity';
 
+export async function ensureDocenteProfileColumns(ds: DataSource): Promise<void> {
+  const hasTable = await ds.query(`
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'docentes'
+  `);
+  if (!hasTable.length) return;
+
+  await ds.query(`
+    ALTER TABLE docentes
+    ADD COLUMN IF NOT EXISTS direccion VARCHAR(200) NOT NULL DEFAULT ''
+  `);
+}
+
 /**
  * Sincroniza docentes desde users (rol DOCENTE) y remapea FKs legacy userId → docentes.id
  */
 export async function prepareDocentesTable(ds: DataSource): Promise<void> {
+  await ensureDocenteProfileColumns(ds);
+
   const hasTable = await ds.query(`
     SELECT 1 FROM information_schema.tables
     WHERE table_schema = 'public' AND table_name = 'docentes'

@@ -28,7 +28,7 @@ export class TemarioController {
 
   @Get('docente/clases')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   findDocenteClases(
     @Req() req: AuthRequest,
     @Query('nivel') nivel?: string,
@@ -48,7 +48,7 @@ export class TemarioController {
 
   @Post('docente/clases')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   createDocenteClase(
     @Req() req: AuthRequest,
     @Body() dto: CreateTemarioClaseDto,
@@ -58,7 +58,7 @@ export class TemarioController {
 
   @Patch('docente/clases/:id')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   updateDocenteClase(
     @Req() req: AuthRequest,
     @Param('id', ParseIntPipe) id: number,
@@ -69,7 +69,7 @@ export class TemarioController {
 
   @Delete('docente/clases/:id')
   @RequirePermiso()
-  @RequireRole('DOCENTE', 'ADMIN')
+  @RequireRole('DOCENTE')
   removeDocenteClase(
     @Req() req: AuthRequest,
     @Param('id', ParseIntPipe) id: number,
@@ -79,7 +79,7 @@ export class TemarioController {
 
   @Get('estudiante/clases')
   @RequirePermiso()
-  @RequireRole('ESTUDIANTE', 'ADMIN')
+  @RequireRole('ESTUDIANTE')
   findEstudianteClases(
     @Req() req: AuthRequest,
     @Query('nivel') nivel?: string,

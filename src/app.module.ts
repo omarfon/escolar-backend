@@ -51,13 +51,17 @@ import { DatabaseSeedService } from './database/database-seed.service';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         type: 'postgres',
-        host: config.get<string>('DB_HOST', 'localhost'),
-        port: config.get<number>('DB_PORT', 5432),
+        host: config.get<string>('DB_HOST', '127.0.0.1'),
+        port: Number(config.get<string>('DB_PORT', '5433')),
         username: config.get<string>('DB_USER', 'postgres'),
         password: config.get<string>('DB_PASSWORD', 'postgres'),
         database: config.get<string>('DB_NAME', 'escolar'),
         autoLoadEntities: true,
         synchronize: true,
+        connectTimeoutMS: 10_000,
+        extra: {
+          connectionTimeoutMillis: 10_000,
+        },
       }),
       dataSourceFactory: async (options) => {
         if (!options) {

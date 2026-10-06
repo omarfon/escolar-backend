@@ -26,6 +26,11 @@ export class SaveCompetencyEvaluationEntryDto {
   @IsOptional()
   @IsIn(['AD', 'A', 'B', 'C'])
   nivelLogro?: NivelLogro | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  observacion?: string;
 }
 
 export class SaveCompetencyEvaluationsBulkDto {
@@ -57,6 +62,11 @@ export class SaveCompetencyEvaluationsBulkDto {
   @IsOptional()
   @IsInt()
   cursoId?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  motivo?: string;
 
   @IsArray()
   @ValidateNested({ each: true })

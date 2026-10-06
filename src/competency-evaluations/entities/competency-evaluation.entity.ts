@@ -16,6 +16,9 @@ export class CompetencyEvaluation {
   @Column()
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column()
   competenciaId: number;
 

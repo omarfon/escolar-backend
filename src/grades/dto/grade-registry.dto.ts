@@ -63,4 +63,9 @@ export class SaveGradeRegistryDto {
   @ValidateNested({ each: true })
   @Type(() => SaveRegistryGradeEntryDto)
   entries: SaveRegistryGradeEntryDto[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  auditMotivo?: string;
 }

@@ -9,6 +9,9 @@ export class Grade {
   studentId: number;
 
   @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
+  @Column({ type: 'int', nullable: true })
   courseId?: number;
 
   @Column({ length: 120 })

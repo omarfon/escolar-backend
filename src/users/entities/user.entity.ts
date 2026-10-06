@@ -8,7 +8,11 @@ export type UserRole =
   | 'TESORERO'
   | 'PADRE'
   | 'ESTUDIANTE'
-  | 'BIBLIOTECARIO';
+  | 'BIBLIOTECARIO'
+  | 'UGEL'
+  | 'DRE'
+  | 'MINEDU'
+  | 'SIAGIE';
 
 export type UserEstado = 'activo' | 'inactivo' | 'bloqueado';
 
@@ -47,9 +51,12 @@ export class User {
   @Column({ length: 120, default: '' })
   cargo: string;
 
-  @Column({ length: 100, select: false })
+  @Column({ length: 255, select: false })
   password: string;
 
   @Column({ type: 'timestamp', nullable: true })
   ultimoAcceso: Date | null;
+
+  @Column({ type: 'int', default: 0 })
+  sessionVersion: number;
 }

@@ -1,0 +1,102 @@
+openapi: 3.0.3
+info:
+  title: Reingreso de estudiante
+  version: '1.0'
+  description: Trámite de reingreso de matrícula retirada (SIAGIE — Gestión de Matrícula).
+paths:
+  /api/v1/students/readmissions/context:
+    get:
+      summary: Contexto institucional y catálogo de motivos
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Contexto
+        '403':
+          description: Sin permiso
+  /api/v1/students/readmissions:
+    get:
+      summary: Listado paginado de reingresos
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: studentId
+          schema: { type: integer }
+        - in: query
+          name: anioEscolar
+          schema: { type: integer }
+        - in: query
+          name: busqueda
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: pageSize
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Listado
+  /api/v1/students/readmissions/{id}:
+    get:
+      summary: Detalle de un reingreso
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Detalle
+        '404':
+          description: No encontrado
+  /api/v1/students/{id}/readmission-eligibility:
+    get:
+      summary: Elegibilidad de reingreso
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Elegibilidad
+  /api/v1/students/{id}/readmissions:
+    post:
+      summary: Registrar reingreso (idempotente)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fechaReingreso, motivo, autorizacion]
+              properties:
+                fechaReingreso: { type: string, format: date }
+                motivo: { type: string }
+                autorizacion: { type: string, minLength: 10 }
+      responses:
+        '201':
+          description: Reingreso registrado
+        '400':
+          description: Validación
+        '403':
+          description: Sin permiso matricula.reingreso
+        '409':
+          description: Duplicado del año escolar
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

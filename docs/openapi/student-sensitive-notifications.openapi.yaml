@@ -1,0 +1,47 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Notificaciones de datos personales sensibles
+  version: 1.0.0
+  description: |
+    Registro y consulta de notificaciones por cambios en datos personales del estudiante.
+    Requiere permiso `estudiantes.expediente` o `admin.reportes`.
+
+paths:
+  /students/sensitive-notifications/context:
+    get:
+      summary: Contexto institucional y campos sensibles clasificados
+      tags: [StudentPrivacy]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Contexto con campos sensibles y política de retención }
+        '403': { description: Sin permiso }
+
+  /students/sensitive-notifications:
+    get:
+      summary: Listar notificaciones de cambios sensibles (paginado)
+      tags: [StudentPrivacy]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: studentId, in: query, schema: { type: integer } }
+        - { name: correoEnviado, in: query, schema: { type: string, enum: [true, false] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Lista paginada de notificaciones }
+
+  /students/sensitive-notifications/{notifId}:
+    get:
+      summary: Detalle de una notificación
+      tags: [StudentPrivacy]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: notifId, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Notificación }
+        '404': { description: No encontrada }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

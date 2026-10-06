@@ -1,0 +1,68 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Auditoría de cambios en estudiante
+  version: 1.0.0
+paths:
+  /students/change-audit/context:
+    get:
+      summary: Contexto institucional y retención
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Contexto }
+        '403': { description: Sin permiso estudiantes.expediente }
+  /students/change-audit:
+    get:
+      summary: Listar cambios en datos de estudiantes (paginado)
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: studentId, in: query, schema: { type: integer } }
+        - { name: accion, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Historial append-only }
+  /students/change-audit/export:
+    get:
+      summary: Exportar auditoría CSV
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: CSV UTF-8 }
+  /students/{id}:
+    patch:
+      summary: Actualizar datos personales / expediente (requiere auditMotivo)
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auditMotivo:
+                  type: string
+                  minLength: 3
+                  description: Motivo obligatorio en actualizaciones
+      responses:
+        '200': { description: Estudiante actualizado }
+        '400': { description: Motivo ausente o datos inválidos }
+        '403': { description: Sin permiso estudiantes.editar }
+
+  /students/{id}/change-audit:
+    get:
+      summary: Historial de cambios de un estudiante
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Cambios del estudiante }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

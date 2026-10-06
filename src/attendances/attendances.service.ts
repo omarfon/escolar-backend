@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, IsNull } from 'typeorm';
 import { StudentsService } from '../students/students.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
 import { CreateJustificationDto } from './dto/justification.dto';
@@ -149,6 +149,11 @@ export interface PendingJustificationResponse {
 export interface AlertSettingsResponse {
   diasAlertaAusentismo: number;
   diasAlertaCritica: number;
+  porcentajeUmbral: number;
+  periodoTipo: string;
+  nivelEducativo: string;
+  modalidad: string;
+  institutionId: number | null;
 }
 
 export interface AbsenceAlertResponse {
@@ -285,7 +290,7 @@ export class AttendancesService {
     grado: string;
     seccion: string;
     fecha: string;
-  }): Promise<DailyRegisterResponse> {
+  }, institutionId?: number): Promise<DailyRegisterResponse> {
     const { nivel, grado, seccion } = query;
     if (!nivel?.trim() || !grado?.trim() || !seccion?.trim()) {
       throw new BadRequestException('Nivel, grado y sección son obligatorios');
@@ -301,7 +306,7 @@ export class AttendancesService {
     const periodo = await this.getPeriodoActual(anio);
     const feriado = await this.feriadosService.getFeriadoEnFecha(fecha, anio);
     const seccionNorm = seccion.trim().toUpperCase();
-    const students = await this.findStudentsBySection(nivel, grado, seccionNorm);
+    const students = await this.findStudentsBySection(nivel, grado, seccionNorm, institutionId);
 
     const studentIds = students.map((s) => s.id);
     const attendances =
@@ -348,7 +353,7 @@ export class AttendancesService {
     seccion: string;
     mes: string;
     fecha?: string;
-  }): Promise<DailyRegisterCalendarResponse> {
+  }, institutionId?: number): Promise<DailyRegisterCalendarResponse> {
     const { nivel, grado, seccion } = query;
     if (!nivel?.trim() || !grado?.trim() || !seccion?.trim()) {
       throw new BadRequestException('Nivel, grado y sección son obligatorios');
@@ -369,7 +374,7 @@ export class AttendancesService {
     const hoy = this.todayIso();
     const fechaSeleccionada = query.fecha?.slice(0, 10) ?? hoy;
     const seccionNorm = seccion.trim().toUpperCase();
-    const students = await this.findStudentsBySection(nivel, grado, seccionNorm);
+    const students = await this.findStudentsBySection(nivel, grado, seccionNorm, institutionId);
     const studentIds = students.map((s) => s.id);
     const periodo = await this.getPeriodoActual(year);
     const grid = this.buildMonthGrid(year, month);
@@ -457,7 +462,7 @@ export class AttendancesService {
     };
   }
 
-  async saveDailyRegister(dto: SaveDailyRegisterDto) {
+  async saveDailyRegister(dto: SaveDailyRegisterDto, institutionId?: number) {
     const fecha = dto.fecha.slice(0, 10);
     const anio = parseCalendarDate(fecha).getUTCFullYear();
     const periodo = await this.getPeriodoActual(anio);
@@ -488,6 +493,7 @@ export class AttendancesService {
       dto.nivel,
       dto.grado,
       seccionNorm,
+      institutionId,
     );
     const allowedIds = new Set(students.map((s) => s.id));
 
@@ -500,28 +506,34 @@ export class AttendancesService {
     }
 
     const saved: Attendance[] = [];
-    for (const entry of dto.registros) {
-      const existing = await this.attendancesRepository.findOne({
-        where: { studentId: entry.studentId, fecha },
+    const studentIds = dto.registros.map((entry) => entry.studentId);
+    await this.attendancesRepository.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(Attendance);
+      const existingRows = studentIds.length
+        ? await repo.find({
+            where: { fecha, studentId: In(studentIds) },
+          })
+        : [];
+      const existingByStudent = new Map(
+        existingRows.map((row) => [row.studentId, row]),
+      );
+      const entities = dto.registros.map((entry) => {
+        const current = existingByStudent.get(entry.studentId);
+        if (current) {
+          current.estado = entry.estado;
+          current.observacion = entry.observacion?.trim() || undefined;
+          return current;
+        }
+        return repo.create({
+          studentId: entry.studentId,
+          fecha,
+          estado: entry.estado,
+          observacion: entry.observacion?.trim() || undefined,
+          institutionId: students.find((s) => s.id === entry.studentId)?.institutionId ?? null,
+        });
       });
-
-      if (existing) {
-        existing.estado = entry.estado;
-        existing.observacion = entry.observacion?.trim() || undefined;
-        saved.push(await this.attendancesRepository.save(existing));
-      } else {
-        saved.push(
-          await this.attendancesRepository.save(
-            this.attendancesRepository.create({
-              studentId: entry.studentId,
-              fecha,
-              estado: entry.estado,
-              observacion: entry.observacion?.trim() || undefined,
-            }),
-          ),
-        );
-      }
-    }
+      saved.push(...(await repo.save(entities)));
+    });
 
     return {
       fecha,
@@ -532,7 +544,7 @@ export class AttendancesService {
     };
   }
 
-  async create(createAttendanceDto: CreateAttendanceDto) {
+  async create(createAttendanceDto: CreateAttendanceDto, institutionId?: number) {
     const fecha = createAttendanceDto.fecha?.slice(0, 10) ?? createAttendanceDto.fecha;
     const feriado = await this.feriadosService.getFeriadoEnFecha(fecha);
     if (feriado) {
@@ -541,7 +553,14 @@ export class AttendancesService {
       );
     }
 
-    const entity = this.attendancesRepository.create(createAttendanceDto);
+    const alumno = await this.studentsService.findOne(createAttendanceDto.studentId);
+    if (institutionId !== undefined && alumno.institutionId !== institutionId) {
+      throw new NotFoundException(`Estudiante ${createAttendanceDto.studentId} no encontrado`);
+    }
+    const entity = this.attendancesRepository.create({
+      ...createAttendanceDto,
+      institutionId: alumno.institutionId,
+    });
     return this.attendancesRepository.save(entity);
   }
 
@@ -550,11 +569,15 @@ export class AttendancesService {
     estado?: string;
     mes?: string;
     anioEscolar?: number;
+    institutionId?: number;
   }) {
     const qb = this.attendancesRepository
       .createQueryBuilder('a')
       .orderBy('a.fecha', 'DESC');
 
+    if (query?.institutionId !== undefined) {
+      qb.andWhere('a.institutionId = :institutionId', { institutionId: query.institutionId });
+    }
     if (query?.studentId) {
       qb.andWhere('a.studentId = :studentId', { studentId: query.studentId });
     }
@@ -597,6 +620,7 @@ export class AttendancesService {
     mes?: string;
     busqueda?: string;
     studentId?: number;
+    institutionId?: number;
   }): Promise<JustificationResponse[]> {
     let rows = await this.justificationRepository.find({
       order: { createdAt: 'DESC' },
@@ -612,7 +636,7 @@ export class AttendancesService {
       );
     }
 
-    const students = await this.studentsService.findAll();
+    const students = await this.studentsService.findAll(query?.institutionId);
     const studentMap = new Map(students.map((s) => [s.id, s]));
 
     let result = rows.map((row) => {
@@ -714,18 +738,16 @@ export class AttendancesService {
     return result.sort((a, b) => b.faltasSinJustificar - a.faltasSinJustificar);
   }
 
-  async getAlertSettings(): Promise<AlertSettingsResponse> {
-    const settings = await this.ensureAlertSettings();
-    return {
-      diasAlertaAusentismo: settings.diasAlertaAusentismo,
-      diasAlertaCritica: settings.diasAlertaCritica,
-    };
+  async getAlertSettings(institutionId?: number): Promise<AlertSettingsResponse> {
+    const settings = await this.ensureAlertSettings(institutionId);
+    return this.mapAlertSettings(settings);
   }
 
   async updateAlertSettings(
     dto: UpdateAlertSettingsDto,
+    institutionId?: number,
   ): Promise<AlertSettingsResponse> {
-    const settings = await this.ensureAlertSettings();
+    const settings = await this.ensureAlertSettings(institutionId, true);
 
     if (dto.diasAlertaAusentismo !== undefined) {
       settings.diasAlertaAusentismo = dto.diasAlertaAusentismo;
@@ -733,6 +755,14 @@ export class AttendancesService {
     if (dto.diasAlertaCritica !== undefined) {
       settings.diasAlertaCritica = dto.diasAlertaCritica;
     }
+    if (dto.porcentajeUmbral !== undefined) {
+      settings.porcentajeUmbral = dto.porcentajeUmbral;
+    }
+    if (dto.periodoTipo !== undefined) settings.periodoTipo = dto.periodoTipo;
+    if (dto.nivelEducativo !== undefined) {
+      settings.nivelEducativo = dto.nivelEducativo.trim();
+    }
+    if (dto.modalidad !== undefined) settings.modalidad = dto.modalidad;
 
     if (settings.diasAlertaCritica <= settings.diasAlertaAusentismo) {
       throw new BadRequestException(
@@ -741,10 +771,7 @@ export class AttendancesService {
     }
 
     const saved = await this.alertSettingsRepository.save(settings);
-    return {
-      diasAlertaAusentismo: saved.diasAlertaAusentismo,
-      diasAlertaCritica: saved.diasAlertaCritica,
-    };
+    return this.mapAlertSettings(saved);
   }
 
   async findAlerts(query?: {
@@ -753,6 +780,7 @@ export class AttendancesService {
     mes?: string;
     busqueda?: string;
     soloCriticos?: boolean;
+    institutionId?: number;
   }): Promise<{
     settings: AlertSettingsResponse;
     alerts: AbsenceAlertResponse[];
@@ -761,7 +789,7 @@ export class AttendancesService {
     mes: string | null;
     mesLabel: string | null;
   }> {
-    const settings = await this.getAlertSettings();
+    const settings = await this.getAlertSettings(query?.institutionId);
     const hoy = this.todayIso();
     const mesKey = query?.mes?.trim()
       ? query.mes.slice(0, 7)
@@ -830,11 +858,10 @@ export class AttendancesService {
     };
   }
 
-  async notifyApoderado(dto: NotifyApoderadoDto): Promise<NotifyApoderadoResult> {
+  async notifyApoderado(dto: NotifyApoderadoDto, institutionId?: number): Promise<NotifyApoderadoResult> {
     const mesKey = dto.mes.slice(0, 7);
-    const students = await this.studentsService.findAll();
-    const student = students.find((s) => s.id === dto.studentId);
-    if (!student) {
+    const student = await this.studentsService.findOne(dto.studentId);
+    if (institutionId !== undefined && student.institutionId !== institutionId) {
       throw new NotFoundException(`Estudiante ${dto.studentId} no encontrado`);
     }
 
@@ -852,7 +879,9 @@ export class AttendancesService {
       );
     }
 
-    const settings = await this.getAlertSettings();
+    const settings = await this.getAlertSettings(
+      institutionId ?? student.institutionId ?? undefined,
+    );
     const nivelAlerta = this.resolveAbsenceAlertLevel(
       stats.faltasInjustificadas,
       stats.diasConsecutivos,
@@ -1047,10 +1076,10 @@ export class AttendancesService {
   async createJustification(
     dto: CreateJustificationDto,
     files: Express.Multer.File[] = [],
+    institutionId?: number,
   ): Promise<JustificationResponse> {
-    const students = await this.studentsService.findAll();
-    const student = students.find((s) => s.id === dto.studentId);
-    if (!student) {
+    const student = await this.studentsService.findOne(dto.studentId);
+    if (institutionId !== undefined && student.institutionId !== institutionId) {
       throw new NotFoundException(`Estudiante ${dto.studentId} no encontrado`);
     }
 
@@ -1136,6 +1165,7 @@ export class AttendancesService {
     grado?: string;
     seccion?: string;
     busqueda?: string;
+    institutionId?: number;
   }): Promise<ControlReportResponse> {
     const hoy = this.todayIso();
     const mes = query?.mes?.slice(0, 7) ?? hoy.slice(0, 7);
@@ -1146,7 +1176,7 @@ export class AttendancesService {
     const [yearStr, monthStr] = mes.split('-');
     const year = Number(yearStr);
     const month = Number(monthStr);
-    const alertSettings = await this.getAlertSettings();
+    const alertSettings = await this.getAlertSettings(query?.institutionId);
     const periodo = await this.getPeriodoActual(year);
 
     const students = await this.filterStudentsForControl(query);
@@ -1359,8 +1389,9 @@ export class AttendancesService {
     grado?: string;
     seccion?: string;
     busqueda?: string;
+    institutionId?: number;
   }): Promise<Student[]> {
-    let students = await this.studentsService.findAll();
+    let students = await this.studentsService.findAll(query?.institutionId);
     students = students.filter(
       (s) => s.activo && s.estadoMatricula === 'activo',
     );
@@ -1454,20 +1485,73 @@ export class AttendancesService {
     return labels[month - 1] ?? '';
   }
 
-  private async ensureAlertSettings(): Promise<AttendanceAlertSettings> {
-    let settings = await this.alertSettingsRepository.findOne({
-      where: {},
+  private mapAlertSettings(
+    settings: AttendanceAlertSettings,
+  ): AlertSettingsResponse {
+    return {
+      diasAlertaAusentismo: settings.diasAlertaAusentismo,
+      diasAlertaCritica: settings.diasAlertaCritica,
+      porcentajeUmbral: Number(settings.porcentajeUmbral ?? 15),
+      periodoTipo: settings.periodoTipo ?? 'mes',
+      nivelEducativo: settings.nivelEducativo ?? '',
+      modalidad: settings.modalidad ?? 'todos',
+      institutionId: settings.institutionId ?? null,
+    };
+  }
+
+  private async ensureAlertSettings(
+    institutionId?: number,
+    createIfMissing = false,
+  ): Promise<AttendanceAlertSettings> {
+    if (institutionId != null) {
+      let row = await this.alertSettingsRepository.findOne({
+        where: { institutionId },
+      });
+      if (!row && createIfMissing) {
+        const global = await this.ensureAlertSettings(undefined, true);
+        row = await this.alertSettingsRepository.save(
+          this.alertSettingsRepository.create({
+            institutionId,
+            diasAlertaAusentismo: global.diasAlertaAusentismo,
+            diasAlertaCritica: global.diasAlertaCritica,
+            porcentajeUmbral: global.porcentajeUmbral,
+            periodoTipo: global.periodoTipo,
+            nivelEducativo: global.nivelEducativo,
+            modalidad: global.modalidad,
+          }),
+        );
+      }
+      if (row) return row;
+    }
+
+    let global = await this.alertSettingsRepository.findOne({
+      where: { institutionId: IsNull() },
       order: { id: 'ASC' },
     });
-    if (!settings) {
-      settings = await this.alertSettingsRepository.save(
+    if (!global) {
+      global = await this.alertSettingsRepository.findOne({
+        order: { id: 'ASC' },
+      });
+    }
+    if (!global && createIfMissing) {
+      global = await this.alertSettingsRepository.save(
         this.alertSettingsRepository.create({
+          institutionId: null,
           diasAlertaAusentismo: 2,
           diasAlertaCritica: 5,
+          porcentajeUmbral: 15,
+          periodoTipo: 'mes',
+          nivelEducativo: '',
+          modalidad: 'todos',
         }),
       );
     }
-    return settings;
+    if (!global) {
+      throw new BadRequestException(
+        'No hay configuración de alertas de ausentismo',
+      );
+    }
+    return global;
   }
 
   private resolveMesBounds(mes: string): {
@@ -1723,12 +1807,19 @@ export class AttendancesService {
     return formatIsoDate(date);
   }
 
-  private async getPeriodoActual(anio: number) {
-    const periodos = await this.periodosService.findAll({
-      anioEscolar: anio,
-      activo: true,
-    });
-    return periodos.find((p) => p.actual) ?? null;
+  private async getPeriodoActual(anioFallback?: number) {
+    const actual = await this.periodosService.findPeriodoActual();
+    if (actual) return actual;
+
+    if (anioFallback) {
+      const periodos = await this.periodosService.findAll({
+        anioEscolar: anioFallback,
+        activo: true,
+      });
+      return periodos.find((p) => p.actual) ?? null;
+    }
+
+    return null;
   }
 
   private isWithinPeriodo(
@@ -1822,27 +1913,9 @@ export class AttendancesService {
     nivel: string,
     grado: string,
     seccion: string,
+    institutionId?: number,
   ): Promise<Student[]> {
-    const students = await this.studentsService.findAll();
-    const nivelNorm = nivel.trim();
-    const gradoNorm = normalizeGradoMatricula(grado);
-    const seccionNorm = seccion.trim().toUpperCase();
-
-    return students
-      .filter(
-        (s) =>
-          s.activo &&
-          s.estadoMatricula === 'activo' &&
-          s.nivel === nivelNorm &&
-          normalizeGradoMatricula(s.grado) === gradoNorm &&
-          s.seccion.toUpperCase() === seccionNorm,
-      )
-      .sort((a, b) =>
-        `${a.apellido} ${a.nombre}`.localeCompare(
-          `${b.apellido} ${b.nombre}`,
-          'es',
-        ),
-      );
+    return this.studentsService.findBySection(nivel, grado, seccion, institutionId);
   }
 
   private async getOrFail(id: number): Promise<Attendance> {

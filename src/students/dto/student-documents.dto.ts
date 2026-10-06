@@ -1,4 +1,5 @@
 import { DocumentoEstado } from '../entities/student-document.entity';
+import { DocumentoArchivoResponse } from './student-document-upload.dto';
 
 export interface DocumentoMatriculaItem {
   id?: number;
@@ -9,6 +10,7 @@ export interface DocumentoMatriculaItem {
   fechaEntrega: string;
   imagenUrl?: string;
   registrado: boolean;
+  archivo?: DocumentoArchivoResponse | null;
 }
 
 export interface StudentDocumentsResponse {

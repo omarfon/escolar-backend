@@ -1,0 +1,35 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Registro sin documento
+  version: 1.0.0
+paths:
+  /students/sin-documento/context:
+    get:
+      summary: Contexto institucional para registro excepcional
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Contexto y permisos }
+  /students/sin-documento/check-duplicates:
+    post:
+      summary: Detectar posibles duplicados antes del registro
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Lista de coincidencias }
+  /students/sin-documento:
+    post:
+      summary: Registrar estudiante sin documento (identificador interno)
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Expediente pendiente de regularización }
+        '409': { description: Posibles duplicados detectados }
+  /students/{id}/regularizar-documento:
+    patch:
+      summary: Asociar documento oficial a expediente pendiente
+      tags: [Students]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Documento regularizado }
+        '400': { description: No pendiente o documento inválido }

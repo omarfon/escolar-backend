@@ -13,6 +13,9 @@ export class PaymentConcept {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ length: 20, unique: true })
   codigo: string;
 

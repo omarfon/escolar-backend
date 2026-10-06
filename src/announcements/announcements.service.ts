@@ -12,36 +12,40 @@ export class AnnouncementsService {
     private readonly announcementsRepository: Repository<Announcement>,
   ) {}
 
-  create(createAnnouncementDto: CreateAnnouncementDto) {
-    const entity = this.announcementsRepository.create(createAnnouncementDto);
+  create(createAnnouncementDto: CreateAnnouncementDto, institutionId?: number) {
+    const entity = this.announcementsRepository.create({
+      ...createAnnouncementDto,
+      institutionId: institutionId ?? null,
+    });
     return this.announcementsRepository.save(entity);
   }
 
-  findAll() {
+  findAll(institutionId?: number) {
     return this.announcementsRepository.find({
+      where: institutionId === undefined ? {} : { institutionId },
       order: { fechaPublicacion: 'DESC' },
     });
   }
 
-  findOne(id: number) {
-    return this.getOrFail(id);
+  findOne(id: number, institutionId?: number) {
+    return this.getOrFail(id, institutionId);
   }
 
-  async update(id: number, updateAnnouncementDto: UpdateAnnouncementDto) {
-    const current = await this.getOrFail(id);
+  async update(id: number, updateAnnouncementDto: UpdateAnnouncementDto, institutionId?: number) {
+    const current = await this.getOrFail(id, institutionId);
     const merged = this.announcementsRepository.merge(current, updateAnnouncementDto);
     return this.announcementsRepository.save(merged);
   }
 
-  async remove(id: number) {
-    const current = await this.getOrFail(id);
+  async remove(id: number, institutionId?: number) {
+    const current = await this.getOrFail(id, institutionId);
     await this.announcementsRepository.remove(current);
     return { deleted: true, id };
   }
 
-  private async getOrFail(id: number): Promise<Announcement> {
+  private async getOrFail(id: number, institutionId?: number): Promise<Announcement> {
     const announcement = await this.announcementsRepository.findOneBy({ id });
-    if (!announcement) {
+    if (!announcement || (institutionId !== undefined && announcement.institutionId !== institutionId)) {
       throw new NotFoundException(`Announcement ${id} no encontrado`);
     }
     return announcement;

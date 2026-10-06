@@ -1,0 +1,102 @@
+openapi: 3.0.3
+info:
+  title: Retiro de estudiante
+  version: '1.0'
+  description: Trámite de retiro de matrícula vigente (SIAGIE — Gestión de Matrícula).
+paths:
+  /api/v1/students/withdrawals/context:
+    get:
+      summary: Contexto institucional y catálogo de motivos
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Contexto
+        '403':
+          description: Sin permiso
+  /api/v1/students/withdrawals:
+    get:
+      summary: Listado paginado de retiros
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: studentId
+          schema: { type: integer }
+        - in: query
+          name: anioEscolar
+          schema: { type: integer }
+        - in: query
+          name: busqueda
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: pageSize
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Listado
+  /api/v1/students/withdrawals/{id}:
+    get:
+      summary: Detalle de un retiro
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Detalle
+        '404':
+          description: No encontrado
+  /api/v1/students/{id}/withdrawal-eligibility:
+    get:
+      summary: Elegibilidad de retiro
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Elegibilidad
+  /api/v1/students/{id}/withdrawals:
+    post:
+      summary: Registrar retiro (idempotente)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fechaRetiro, motivo, sustento]
+              properties:
+                fechaRetiro: { type: string, format: date }
+                motivo: { type: string }
+                sustento: { type: string, minLength: 10 }
+      responses:
+        '201':
+          description: Retiro registrado
+        '400':
+          description: Validación
+        '403':
+          description: Sin permiso matricula.retiro
+        '409':
+          description: Duplicado del año escolar
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

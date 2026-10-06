@@ -38,6 +38,7 @@ export interface EventResponse {
   fechaInicioDisplay: string;
   fechaFinDisplay: string | null;
   horario: string;
+  institutionId: number | null;
 }
 
 @Injectable()
@@ -47,7 +48,7 @@ export class EventsService {
     private readonly eventsRepo: Repository<Evento>,
   ) {}
 
-  create(dto: CreateEventDto): Promise<EventResponse> {
+  create(dto: CreateEventDto, institutionId?: number): Promise<EventResponse> {
     const vis = normalizeEventVisibility(dto);
     const fechaFin = dto.fechaFin ?? dto.fechaInicio;
     const estado = normalizeEventEstado({
@@ -73,6 +74,7 @@ export class EventsService {
       publicado: dto.publicado ?? true,
       estado,
       cancelado: canceladoFromEstado(estado),
+      institutionId: institutionId ?? null,
     });
     return this.eventsRepo.save(entity).then((saved) => this.toResponse(saved));
   }
@@ -83,6 +85,7 @@ export class EventsService {
     destinatarios?: string;
     estado?: string;
     busqueda?: string;
+    institutionId?: number;
   }): Promise<EventResponse[]> {
     await this.syncEstadosLegacy();
 
@@ -91,6 +94,9 @@ export class EventsService {
       .orderBy('e.fechaInicio', 'ASC')
       .addOrderBy('e.horaInicio', 'ASC');
 
+    if (query?.institutionId !== undefined) {
+      qb.andWhere('e.institutionId = :institutionId', { institutionId: query.institutionId });
+    }
     if (query?.mes) {
       qb.andWhere("TO_CHAR(e.fechaInicio, 'YYYY-MM') = :mes", { mes: query.mes });
     }
@@ -122,13 +128,13 @@ export class EventsService {
     return result;
   }
 
-  async findOne(id: number): Promise<EventResponse> {
-    const event = await this.getOrFail(id);
+  async findOne(id: number, institutionId?: number): Promise<EventResponse> {
+    const event = await this.getOrFail(id, institutionId);
     return this.toResponse(event);
   }
 
-  async update(id: number, dto: UpdateEventDto): Promise<EventResponse> {
-    const current = await this.getOrFail(id);
+  async update(id: number, dto: UpdateEventDto, institutionId?: number): Promise<EventResponse> {
+    const current = await this.getOrFail(id, institutionId);
     Object.assign(current, {
       ...dto,
       titulo: dto.titulo !== undefined ? dto.titulo.trim() : current.titulo,
@@ -161,15 +167,17 @@ export class EventsService {
     return this.toResponse(saved);
   }
 
-  async remove(id: number) {
-    const current = await this.getOrFail(id);
+  async remove(id: number, institutionId?: number) {
+    const current = await this.getOrFail(id, institutionId);
     await this.eventsRepo.remove(current);
     return { deleted: true, id };
   }
 
-  private async getOrFail(id: number): Promise<Evento> {
+  private async getOrFail(id: number, institutionId?: number): Promise<Evento> {
     const event = await this.eventsRepo.findOneBy({ id });
-    if (!event) throw new NotFoundException(`Evento ${id} no encontrado`);
+    if (!event || (institutionId !== undefined && event.institutionId !== institutionId)) {
+      throw new NotFoundException(`Evento ${id} no encontrado`);
+    }
     return event;
   }
 
@@ -201,6 +209,7 @@ export class EventsService {
       fechaInicioDisplay: formatDate(event.fechaInicio),
       fechaFinDisplay: event.fechaFin ? formatDate(event.fechaFin) : null,
       horario: formatHorario(event.horaInicio, event.horaFin),
+      institutionId: event.institutionId ?? null,
     };
   }
 

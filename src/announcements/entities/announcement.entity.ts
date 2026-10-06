@@ -5,6 +5,9 @@ export class Announcement {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ length: 120 })
   titulo: string;
 

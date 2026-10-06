@@ -1,0 +1,159 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Multi-rol por usuario
+  version: 1.0.0
+  description: |
+    Asignación RBAC con múltiples roles por usuario y ámbito territorial
+    (MINEDU, DRE, UGEL, IE). Requiere permiso `admin.usuarios`.
+
+paths:
+  /users/{id}/role-assignments:
+    get:
+      summary: Listar asignaciones de rol de un usuario
+      tags: [Users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Lista de asignaciones (activas e históricas revocadas)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserRoleAssignment'
+        '401':
+          description: No autenticado
+        '403':
+          description: Sin permiso admin.usuarios
+        '404':
+          description: Usuario no encontrado
+
+    put:
+      summary: Reemplazar asignaciones activas de un usuario
+      description: |
+        Revoca (soft) las asignaciones activas previas y crea las nuevas.
+        Incrementa `sessionVersion` del usuario. Registra auditoría.
+      tags: [Users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetUserRoleAssignments'
+      responses:
+        '200':
+          description: Asignaciones activas actualizadas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserRoleAssignment'
+        '400':
+          description: Validación (rol principal, ámbito, duplicados)
+        '401':
+          description: No autenticado
+        '403':
+          description: Sin permiso admin.usuarios
+        '404':
+          description: Usuario no encontrado
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AmbitoTerritorial:
+      type: string
+      enum: [MINEDU, DRE, UGEL, IE]
+
+    RoleCodigo:
+      type: string
+      enum:
+        - ADMIN
+        - DIRECTOR
+        - DOCENTE
+        - SECRETARIA
+        - TESORERO
+        - PADRE
+        - ESTUDIANTE
+        - BIBLIOTECARIO
+        - UGEL
+        - DRE
+        - MINEDU
+
+    RoleAssignmentItem:
+      type: object
+      required: [roleCodigo, ambito, esPrincipal]
+      properties:
+        roleCodigo:
+          $ref: '#/components/schemas/RoleCodigo'
+        ambito:
+          $ref: '#/components/schemas/AmbitoTerritorial'
+        dreCodigo:
+          type: string
+          maxLength: 20
+          description: Obligatorio si ambito = DRE
+        ugelCodigo:
+          type: string
+          maxLength: 20
+          description: Obligatorio si ambito = UGEL
+        institutionId:
+          type: integer
+          nullable: true
+          description: IE asociada cuando ambito = IE
+        esPrincipal:
+          type: boolean
+          description: Exactamente una asignación debe ser principal
+
+    SetUserRoleAssignments:
+      type: object
+      required: [motivo, assignments]
+      properties:
+        motivo:
+          type: string
+          maxLength: 500
+        assignments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoleAssignmentItem'
+
+    UserRoleAssignment:
+      allOf:
+        - $ref: '#/components/schemas/RoleAssignmentItem'
+        - type: object
+          properties:
+            id:
+              type: integer
+            roleLabel:
+              type: string
+            activo:
+              type: boolean
+            motivo:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+            revokedAt:
+              type: string
+              format: date-time
+              nullable: true

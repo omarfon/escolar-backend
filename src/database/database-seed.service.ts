@@ -59,6 +59,7 @@ import { join } from 'path';
 import { TemarioService } from '../temario/temario.service';
 import { FeriadosMaestrosService } from '../maestros/feriados/feriados.service';
 import { FormulasEvaluacionMaestrosService } from '../maestros/formulas-evaluacion/formulas-evaluacion.service';
+import { AniosEscolaresService } from '../maestros/anios-escolares/anios-escolares.service';
 import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import { EventosMaestrosService } from '../maestros/eventos/eventos.service';
 import { FaltasReconocimientosService } from '../maestros/faltas-reconocimientos/faltas-reconocimientos.service';
@@ -76,6 +77,7 @@ export class DatabaseSeedService {
     private readonly feriadosService: FeriadosMaestrosService,
     private readonly formulasService: FormulasEvaluacionMaestrosService,
     private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly aniosEscolaresService: AniosEscolaresService,
     private readonly eventosMaestrosService: EventosMaestrosService,
     private readonly faltasService: FaltasReconocimientosService,
     private readonly tasksService: TasksService,
@@ -251,6 +253,7 @@ export class DatabaseSeedService {
     await this.feriadosService.seedCatalogIfEmpty();
     await this.formulasService.seedCatalogIfEmpty();
     await this.periodosService.seedCatalogIfEmpty();
+    await this.aniosEscolaresService.seedFromInstitution();
     await this.eventosMaestrosService.seedCatalogIfEmpty();
     await this.faltasService.seedCatalogIfEmpty();
   }
@@ -1009,6 +1012,7 @@ export class DatabaseSeedService {
             seccion: row.seccion,
             promedio: row.promedio,
             estado: row.estado,
+            institutionId: student.institutionId,
           }),
         );
       }

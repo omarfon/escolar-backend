@@ -19,6 +19,7 @@ export type AuditAccion =
   | 'consultar';
 
 export type AuditNivel = 'info' | 'warning' | 'critical';
+export type AuditResultado = 'success' | 'error';
 
 @Entity('audit_logs')
 export class AuditLog {
@@ -33,6 +34,9 @@ export class AuditLog {
 
   @Column({ length: 60, default: '' })
   usuarioRol: string;
+
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
 
   @Column({ length: 20, default: 'consultar' })
   accion: AuditAccion;
@@ -57,6 +61,12 @@ export class AuditLog {
 
   @Column({ length: 10, default: 'info' })
   nivel: AuditNivel;
+
+  @Column({ length: 10, default: 'success' })
+  resultado: AuditResultado;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  correlationId: string | null;
 
   @CreateDateColumn()
   createdAt: Date;

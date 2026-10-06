@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Brackets, In, Repository } from 'typeorm';
+import {
+  DocenteSalonDetalle,
+  DocentesMaestrosService,
+} from '../maestros/docentes/docentes.service';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 import {
   ResourceTipo,
@@ -22,6 +26,16 @@ export interface TaskResourceEmbed {
   mimeType: string;
   tamanoBytes: number;
   docente: string;
+}
+
+export interface PendingReviewTaskResponse extends TaskResponse {
+  tareaTitulo: string;
+  salonLabel: string;
+}
+
+export interface PendingReviewResponse {
+  porCalificar: PendingReviewTaskResponse[];
+  vencidasSinEntrega: PendingReviewTaskResponse[];
 }
 
 export interface TaskResponse {
@@ -57,6 +71,7 @@ export class TasksService {
     private readonly studentsRepository: Repository<Student>,
     @InjectRepository(TeacherResource)
     private readonly resourcesRepository: Repository<TeacherResource>,
+    private readonly docentesService: DocentesMaestrosService,
   ) {}
 
   async create(createTaskDto: CreateTaskDto): Promise<TaskResponse> {
@@ -133,6 +148,71 @@ export class TasksService {
         resourceByTaskId.get(t.id),
       ),
     );
+  }
+
+  /** Entregas SUBMITTED y vencidas sin entrega de los salones del docente (una sola llamada HTTP). */
+  async findPendingReviewForUser(
+    userId: number,
+    username: string | undefined,
+    anioEscolar?: number,
+  ): Promise<PendingReviewResponse> {
+    const { salones } = await this.docentesService.findSalonesForUser(
+      userId,
+      username,
+      anioEscolar,
+    );
+    if (!salones.length) {
+      return { porCalificar: [], vencidasSinEntrega: [] };
+    }
+
+    const resources = await this.loadTaskResourcesForSalons(salones);
+    if (!resources.length) {
+      return { porCalificar: [], vencidasSinEntrega: [] };
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const porCalificar: PendingReviewTaskResponse[] = [];
+    const vencidasSinEntrega: PendingReviewTaskResponse[] = [];
+
+    const entregasPorRecurso = await Promise.all(
+      resources.map(async (resource) => {
+        const salon = this.matchSalonForResource(resource, salones);
+        if (!salon) return [];
+        const entregas = await this.findEntregasForResource({
+          resourceId: resource.id,
+          nivel: salon.nivel,
+          grado: salon.grado,
+          seccion: salon.seccion,
+        });
+        const salonLabel = `${salon.grado} "${salon.seccion}" · ${salon.nivel}`;
+        const tareaTitulo = resource.descripcion?.trim() || resource.titulo;
+        return entregas.map((e) => ({ ...e, tareaTitulo, salonLabel }));
+      }),
+    );
+
+    for (const items of entregasPorRecurso) {
+      for (const item of items) {
+        if (item.estado === 'SUBMITTED') {
+          porCalificar.push(item);
+        } else if (
+          (item.estado === 'OVERDUE' || item.estado === 'PENDING') &&
+          item.fechaEntrega < today
+        ) {
+          vencidasSinEntrega.push(item);
+        }
+      }
+    }
+
+    porCalificar.sort((a, b) =>
+      (b.fechaEntregaReal ?? b.fechaEntrega).localeCompare(
+        a.fechaEntregaReal ?? a.fechaEntrega,
+      ),
+    );
+    vencidasSinEntrega.sort((a, b) =>
+      a.fechaEntrega.localeCompare(b.fechaEntrega),
+    );
+
+    return { porCalificar, vencidasSinEntrega };
   }
 
   async findEntregasForResource(query: {
@@ -308,6 +388,50 @@ export class TasksService {
     const current = await this.getOrFail(id);
     await this.tasksRepository.remove(current);
     return { deleted: true, id };
+  }
+
+  private async loadTaskResourcesForSalons(
+    salones: DocenteSalonDetalle[],
+  ): Promise<TeacherResource[]> {
+    const qb = this.resourcesRepository
+      .createQueryBuilder('r')
+      .where('r.visible = true')
+      .andWhere('r.tipo IN (:...tipos)', { tipos: ['tarea', 'evaluacion'] });
+
+    qb.andWhere(
+      new Brackets((orQb) => {
+        salones.forEach((salon, index) => {
+          orQb.orWhere(
+            `(r.nivel = :nivel${index} AND r.grado = :grado${index} AND UPPER(TRIM(r.seccion)) = :seccion${index})`,
+            {
+              [`nivel${index}`]: salon.nivel.trim(),
+              [`grado${index}`]: salon.grado.trim(),
+              [`seccion${index}`]: salon.seccion.trim().toUpperCase(),
+            },
+          );
+        });
+      }),
+    );
+
+    return qb
+      .orderBy('r.fechaEntrega', 'DESC')
+      .addOrderBy('r.id', 'DESC')
+      .getMany();
+  }
+
+  private matchSalonForResource(
+    resource: TeacherResource,
+    salones: DocenteSalonDetalle[],
+  ): DocenteSalonDetalle | undefined {
+    const gradoNorm = normalizeGradoMatricula(resource.grado);
+    const seccionNorm = resource.seccion.trim().toUpperCase();
+    const nivel = resource.nivel.trim();
+    return salones.find(
+      (s) =>
+        s.nivel.trim() === nivel &&
+        normalizeGradoMatricula(s.grado) === gradoNorm &&
+        s.seccion.trim().toUpperCase() === seccionNorm,
+    );
   }
 
   private async applyOverdueStatus(tasks: Task[]): Promise<void> {

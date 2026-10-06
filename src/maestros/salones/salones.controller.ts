@@ -8,10 +8,13 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { SalonesService } from './salones.service';
 import { CreateSalonDto, SyncSalonesDto, UpdateSalonDto } from './dto/salon.dto';
+import { MaestrosAuthRequest } from '../common/maestros-tenant.util';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { PermisoGuard } from '../../auth/guards/permiso.guard';
 import { RequirePermiso } from '../../auth/decorators/require-permiso.decorator';
@@ -29,13 +32,17 @@ export class SalonesController {
     @Query('nivel') nivel?: string,
     @Query('grado') grado?: string,
     @Query('activo') activo?: string,
+    @Req() req?: Request,
   ) {
-    return this.salonesService.findAll({
-      anioEscolar: anioEscolar ? Number(anioEscolar) : undefined,
-      nivel,
-      grado,
-      activo: activo === undefined ? undefined : activo === 'true',
-    });
+    return this.salonesService.findAll(
+      {
+        anioEscolar: anioEscolar ? Number(anioEscolar) : undefined,
+        nivel,
+        grado,
+        activo: activo === undefined ? undefined : activo === 'true',
+      },
+      req,
+    );
   }
 
   @Get('vacancies')
@@ -45,26 +52,30 @@ export class SalonesController {
     @Query('anioEscolar') anioEscolar?: string,
     @Query('nivel') nivel?: string,
     @Query('grado') grado?: string,
+    @Req() req?: Request,
   ) {
-    return this.salonesService.findVacancies({
-      anioEscolar: anioEscolar ? Number(anioEscolar) : undefined,
-      nivel,
-      grado,
-    });
+    return this.salonesService.findVacancies(
+      {
+        anioEscolar: anioEscolar ? Number(anioEscolar) : undefined,
+        nivel,
+        grado,
+      },
+      req,
+    );
   }
 
   @Post('sync')
   @RequirePermiso('matricula.vacantes')
   @UseGuards(PermisoGuard)
-  sync(@Body() dto: SyncSalonesDto) {
-    return this.salonesService.syncFromInstitution(dto);
+  sync(@Body() dto: SyncSalonesDto, @Req() req: Request) {
+    return this.salonesService.syncFromInstitution(dto, req as MaestrosAuthRequest);
   }
 
   @Post()
   @RequirePermiso('matricula.vacantes')
   @UseGuards(PermisoGuard)
-  create(@Body() dto: CreateSalonDto) {
-    return this.salonesService.create(dto);
+  create(@Body() dto: CreateSalonDto, @Req() req: Request) {
+    return this.salonesService.create(dto, req as MaestrosAuthRequest);
   }
 
   @Patch(':id')
@@ -73,14 +84,15 @@ export class SalonesController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateSalonDto,
+    @Req() req: Request,
   ) {
-    return this.salonesService.update(id, dto);
+    return this.salonesService.update(id, dto, req as MaestrosAuthRequest);
   }
 
   @Delete(':id')
   @RequirePermiso('matricula.vacantes')
   @UseGuards(PermisoGuard)
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.salonesService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.salonesService.remove(id, req as MaestrosAuthRequest);
   }
 }

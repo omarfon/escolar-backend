@@ -1,0 +1,80 @@
+openapi: 3.0.3
+info:
+  title: Calendarización escolar — Períodos académicos
+  version: '1.0'
+  description: |
+    CRUD de periodos académicos y división del año en bimestres, trimestres o semestres.
+paths:
+  /api/v1/maestros/periodos-academicos:
+    get:
+      summary: Listar periodos académicos
+      parameters:
+        - in: query
+          name: anioEscolar
+          schema: { type: integer }
+        - in: query
+          name: tipo
+          schema: { type: string, enum: [bimestre, trimestre, semestre] }
+        - in: query
+          name: activo
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Lista de periodos
+        '403':
+          description: Sin permiso
+    post:
+      summary: Crear periodo académico individual
+      responses:
+        '201':
+          description: Periodo creado
+        '400':
+          description: Validación (fechas, solapamiento, rango)
+  /api/v1/maestros/periodos-academicos/actual:
+    get:
+      summary: Periodo académico vigente
+      responses:
+        '200':
+          description: Periodo actual o null
+  /api/v1/maestros/periodos-academicos/dividir:
+    post:
+      summary: Dividir año escolar en periodos (plantilla MINEDU)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anioEscolar]
+              properties:
+                anioEscolar: { type: integer, minimum: 2000 }
+                tipo: { type: string, enum: [bimestre, trimestre, semestre] }
+                motivo: { type: string, maxLength: 500 }
+                sobreescribir: { type: boolean }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 64 }
+      responses:
+        '201':
+          description: Periodos generados
+        '409':
+          description: Ya existen periodos sin sobreescribir
+  /api/v1/maestros/anios-escolares/{id}/dividir-periodos:
+    post:
+      summary: Dividir periodos de un año escolar registrado
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tipo: { type: string, enum: [bimestre, trimestre, semestre] }
+                motivo: { type: string }
+                sobreescribir: { type: boolean }
+                idempotencyKey: { type: string }
+      responses:
+        '201':
+          description: División aplicada con historial versionado

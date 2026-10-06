@@ -276,6 +276,56 @@ export class MailService implements OnModuleInit {
     return this.send({ to: parentEmail, subject, text, html });
   }
 
+  async sendStudentPersonalDataChangeNotification(options: {
+    student: Student;
+    camposLabels: string[];
+    actorNombre: string;
+    motivo: string;
+  }): Promise<MailSendResult | null> {
+    const parentEmail = this.resolveParentEmail(options.student);
+    if (!parentEmail) {
+      this.logger.warn(
+        `Sin correo de apoderado para alumno ${options.student.id}; no se envió aviso de datos personales.`,
+      );
+      return null;
+    }
+
+    const alumno = `${options.student.nombre} ${options.student.apellido}`.trim();
+    const aula = `${options.student.grado} · Sección ${options.student.seccion}`;
+    const campos = options.camposLabels.join(', ');
+    const fecha = this.formatFecha(new Date().toISOString().slice(0, 10));
+    const subject = `Actualización de datos personales — ${alumno}`;
+
+    const text = [
+      'Estimado(a) apoderado(a),',
+      '',
+      `Le informamos que se registraron cambios en datos personales del estudiante ${alumno} (${aula}).`,
+      '',
+      `Campos actualizados: ${campos}`,
+      `Motivo registrado: ${options.motivo}`,
+      `Fecha: ${fecha}`,
+      `Registrado por: ${options.actorNombre}`,
+      '',
+      'Por seguridad, este mensaje no incluye los valores actualizados.',
+      'Puede verificar la información en el Portal de Padres o comunicarse con la institución.',
+      '',
+      'Este mensaje fue generado automáticamente por el Portal Escolar.',
+    ].join('\n');
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;color:#1f2937">
+        <h2 style="color:#4338ca;margin:0 0 12px">Actualización de datos personales</h2>
+        <p>Estimado(a) apoderado(a),</p>
+        <p>Se registraron cambios en los datos personales de <strong>${alumno}</strong> (${aula}).</p>
+        <p><strong>Campos actualizados:</strong> ${campos}</p>
+        <p><strong>Motivo:</strong> ${options.motivo}</p>
+        <p style="font-size:14px;color:#6b7280">Por seguridad, este correo no incluye los valores modificados.</p>
+        <p style="font-size:12px;color:#9ca3af;margin-top:24px">${fecha} · ${options.actorNombre} · Portal Escolar</p>
+      </div>`;
+
+    return this.send({ to: parentEmail, subject, text, html });
+  }
+
   async sendParentToTeacherMessage(options: {
     teacherEmail: string;
     teacherName: string;
@@ -366,6 +416,89 @@ export class MailService implements OnModuleInit {
       const message = err instanceof Error ? err.message : 'Error desconocido';
       this.logger.error(`No se pudo iniciar Ethereal: ${message}`);
     }
+  }
+
+  async sendTransferNotification(options: {
+    to: string;
+    codigo: string;
+    studentNombre: string;
+    mensaje: string;
+    plantilla: string;
+    estadoNuevo: string;
+    ambito: string;
+  }): Promise<MailSendResult> {
+    const subject = `Traslado ${options.codigo} — ${options.estadoNuevo}`;
+    const text = [
+      'Notificación de traslado escolar',
+      '',
+      options.mensaje,
+      '',
+      `Estudiante: ${options.studentNombre}`,
+      `Código solicitud: ${options.codigo}`,
+      `Estado: ${options.estadoNuevo}`,
+      `Ámbito: ${options.ambito}`,
+      '',
+      'Ingrese al Portal Escolar → Traslados para ver el detalle y marcar como leída.',
+      '',
+      'Este mensaje fue generado automáticamente por el Portal Escolar.',
+    ].join('\n');
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;color:#1f2937">
+        <h2 style="color:#4338ca;margin:0 0 12px">Notificación de traslado</h2>
+        <p>${this.escapeHtml(options.mensaje)}</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <tr><td style="padding:8px;border:1px solid #e5e7eb">Estudiante</td><td style="padding:8px;border:1px solid #e5e7eb"><strong>${this.escapeHtml(options.studentNombre)}</strong></td></tr>
+          <tr><td style="padding:8px;border:1px solid #e5e7eb">Solicitud</td><td style="padding:8px;border:1px solid #e5e7eb"><strong>${this.escapeHtml(options.codigo)}</strong></td></tr>
+          <tr><td style="padding:8px;border:1px solid #e5e7eb">Estado</td><td style="padding:8px;border:1px solid #e5e7eb"><strong>${this.escapeHtml(options.estadoNuevo)}</strong></td></tr>
+        </table>
+        <p style="font-size:14px;color:#6b7280">Revise la bandeja de traslados en el portal para confirmar la recepción.</p>
+      </div>`;
+
+    return this.send({ to: options.to, subject, text, html });
+  }
+
+  async sendPasswordResetEmail(options: {
+    to: string;
+    nombre: string;
+    resetUrl: string;
+    expiresMinutes: number;
+    institucionNombre: string;
+  }): Promise<MailSendResult> {
+    const subject = `Recuperación de contraseña — ${options.institucionNombre || 'Portal Escolar'}`;
+    const text = [
+      `Estimado(a) ${options.nombre},`,
+      '',
+      'Recibimos una solicitud para restablecer la contraseña de su cuenta en el sistema escolar.',
+      '',
+      `Para continuar, abra el siguiente enlace (válido por ${options.expiresMinutes} minutos):`,
+      options.resetUrl,
+      '',
+      'Si usted no solicitó este cambio, ignore este mensaje. Su contraseña actual seguirá siendo válida.',
+      '',
+      'Por seguridad, el enlace solo puede usarse una vez.',
+      '',
+      options.institucionNombre,
+    ].join('\n');
+
+    const html = `
+      <p>Estimado(a) <strong>${this.escapeHtml(options.nombre)}</strong>,</p>
+      <p>Recibimos una solicitud para restablecer la contraseña de su cuenta.</p>
+      <p><a href="${options.resetUrl}">Restablecer contraseña</a></p>
+      <p>El enlace expira en ${options.expiresMinutes} minutos y solo puede usarse una vez.</p>
+      <p>Si no solicitó este cambio, ignore este correo.</p>
+      <p><small>${this.escapeHtml(options.institucionNombre)}</small></p>
+    `;
+
+    return this.send({ to: options.to, subject, text, html });
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   private formatFrom(): string {

@@ -31,6 +31,7 @@ import { GradeSection } from '../institution/entities/grade-section.entity';
 import { MaestroFormulaEvaluacion } from './formulas-evaluacion/entities/maestro-formula-evaluacion.entity';
 import { FormulasEvaluacionMaestrosController } from './formulas-evaluacion/formulas-evaluacion.controller';
 import { FormulasEvaluacionMaestrosService } from './formulas-evaluacion/formulas-evaluacion.service';
+import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { AuthModule } from '../auth/auth.module';
 import { Evento } from '../events/entities/evento.entity';
 import { Docente } from './docentes/entities/docente.entity';
@@ -39,6 +40,13 @@ import { CurriculumTeacherAssignment } from '../curricula/entities/curriculum-te
 import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
 import { HorarioBlock } from '../horarios/entities/horario-block.entity';
 import { HorarioPeriodo } from '../horarios/entities/horario-periodo.entity';
+import { AniosEscolaresController } from './anios-escolares/anios-escolares.controller';
+import { AniosEscolaresService } from './anios-escolares/anios-escolares.service';
+import { MaestroAnioEscolar } from './anios-escolares/entities/maestro-anio-escolar.entity';
+import { MaestroAnioEscolarEvent } from './anios-escolares/entities/maestro-anio-escolar-event.entity';
+import { CalendarioEscolarController } from './calendario/calendario.controller';
+import { CalendarioEscolarService } from './calendario/calendario.service';
+import { Announcement } from '../announcements/entities/announcement.entity';
 
 @Module({
   imports: [
@@ -63,11 +71,15 @@ import { HorarioPeriodo } from '../horarios/entities/horario-periodo.entity';
       MaestroFormulaEvaluacion,
       HorarioBlock,
       HorarioPeriodo,
+      MaestroAnioEscolar,
+      MaestroAnioEscolarEvent,
+      Announcement,
     ]),
     AuthModule,
+    AuditLogsModule,
   ],
-  controllers: [SalonesController, CursosMaestrosController, FaltasReconocimientosController, SedesMaestrosController, FeriadosMaestrosController, EventosMaestrosController, DocentesMaestrosController, PeriodosAcademicosMaestrosController, FormulasEvaluacionMaestrosController],
-  providers: [SalonesService, CursosMaestrosService, FaltasReconocimientosService, SedesMaestrosService, FeriadosMaestrosService, EventosMaestrosService, DocentesMaestrosService, PeriodosAcademicosMaestrosService, FormulasEvaluacionMaestrosService],
-  exports: [SalonesService, CursosMaestrosService, FaltasReconocimientosService, SedesMaestrosService, FeriadosMaestrosService, EventosMaestrosService, DocentesMaestrosService, PeriodosAcademicosMaestrosService, FormulasEvaluacionMaestrosService],
+  controllers: [SalonesController, CursosMaestrosController, FaltasReconocimientosController, SedesMaestrosController, FeriadosMaestrosController, EventosMaestrosController, DocentesMaestrosController, PeriodosAcademicosMaestrosController, FormulasEvaluacionMaestrosController, AniosEscolaresController, CalendarioEscolarController],
+  providers: [SalonesService, CursosMaestrosService, FaltasReconocimientosService, SedesMaestrosService, FeriadosMaestrosService, EventosMaestrosService, DocentesMaestrosService, PeriodosAcademicosMaestrosService, FormulasEvaluacionMaestrosService, AniosEscolaresService, CalendarioEscolarService],
+  exports: [SalonesService, CursosMaestrosService, FaltasReconocimientosService, SedesMaestrosService, FeriadosMaestrosService, EventosMaestrosService, DocentesMaestrosService, PeriodosAcademicosMaestrosService, FormulasEvaluacionMaestrosService, AniosEscolaresService, CalendarioEscolarService],
 })
 export class MaestrosModule {}

@@ -11,11 +11,22 @@ import { HorarioBlock } from '../../horarios/entities/horario-block.entity';
 import { HorarioPeriodo } from '../../horarios/entities/horario-periodo.entity';
 import { Student } from '../../students/entities/student.entity';
 import { listStudentsForAula } from '../../students/students-dedupe.util';
+import { gradoLabelFromParts } from '../../students/students.mapper';
 import { CurriculumTeacherAssignment } from '../../curricula/entities/curriculum-teacher-assignment.entity';
 import { CurriculumSubject } from '../../curricula/entities/curriculum-subject.entity';
 import { Salon } from '../salones/entities/salon.entity';
 import { normalizeGradoMatricula } from '../salones/salones.util';
+import { PeriodosAcademicosMaestrosService } from '../periodos-academicos/periodos-academicos.service';
 import { CreateDocenteDto, UpdateDocenteDto } from './dto/docente.dto';
+import { esSuperusuarioSiagie } from '../../auth/tenant-scope.util';
+import { Institution } from '../../institution/entities/institution.entity';
+import {
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosInstitutionId,
+} from '../common/maestros-tenant.util';
 import { UpdateMiPerfilDocenteDto } from './dto/update-mi-perfil-docente.dto';
 import {
   Docente,
@@ -28,6 +39,7 @@ export interface DocenteAsignacionItem {
   id: number;
   cursoId: number;
   cursoNombre: string;
+  curriculumId: number | null;
   nivel: string;
   grado: string;
   secciones: string[];
@@ -61,6 +73,8 @@ export interface DocenteMisSalonesResponse {
 
 export interface DocenteListItem {
   id: number;
+  institutionId: number;
+  institutionNombre?: string;
   nombres: string;
   apellidos: string;
   nombreCompleto: string;
@@ -88,6 +102,7 @@ export interface PortalDocenteCursoCard {
   id: string;
   assignmentId: number;
   cursoId: number;
+  curriculumId: number | null;
   cursoNombre: string;
   nivel: string;
   grado: string;
@@ -131,6 +146,8 @@ export interface DocentesPage {
   pageSize: number;
   totalPages: number;
   meta: DocentesPageMeta;
+  /** true cuando SIAGIE consulta sin IE seleccionada (todas las instituciones). */
+  vistaGlobal?: boolean;
 }
 
 @Injectable()
@@ -152,6 +169,9 @@ export class DocentesMaestrosService implements OnModuleInit {
     private readonly horarioBlockRepo: Repository<HorarioBlock>,
     @InjectRepository(HorarioPeriodo)
     private readonly horarioPeriodoRepo: Repository<HorarioPeriodo>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
+    private readonly periodosService: PeriodosAcademicosMaestrosService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -177,11 +197,28 @@ export class DocentesMaestrosService implements OnModuleInit {
     },
     page = 1,
     pageSize = 10,
+    req?: MaestrosAuthRequest,
   ): Promise<DocentesPage> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    const esSiagieGlobal =
+      req != null && institutionId == null && esSuperusuarioSiagie(req.user);
+
+    if (req && institutionId == null && !esSiagieGlobal) {
+      return {
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize,
+        totalPages: 1,
+        meta: { activos: 0, horasAsignadas: 0, sobreCarga: 0 },
+      };
+    }
+
     const anio = query?.anioEscolar ?? new Date().getFullYear();
     const safePageSize = Math.min(100, Math.max(1, pageSize));
-    const docentes = await this.buildQuery(query).getMany();
-    const enriched = await this.enrichDocentes(docentes, anio);
+    const scopeInstitutionId = esSiagieGlobal ? undefined : institutionId;
+    const docentes = await this.buildQuery(query, scopeInstitutionId).getMany();
+    const enriched = await this.enrichDocentes(docentes, anio, scopeInstitutionId);
     const items = enriched.map(({ asignaciones, salones, ...rest }) => ({
       ...rest,
       totalAsignaciones: asignaciones.length,
@@ -208,18 +245,24 @@ export class DocentesMaestrosService implements OnModuleInit {
       pageSize: safePageSize,
       totalPages,
       meta,
+      vistaGlobal: esSiagieGlobal || undefined,
     };
   }
 
-  private buildQuery(query?: {
-    estado?: string;
-    sede?: string;
-    busqueda?: string;
-  }): SelectQueryBuilder<Docente> {
+  private buildQuery(
+    query?: {
+      estado?: string;
+      sede?: string;
+      busqueda?: string;
+    },
+    institutionId?: number,
+  ): SelectQueryBuilder<Docente> {
     const qb = this.docenteRepo
       .createQueryBuilder('d')
       .orderBy('d.apellidos', 'ASC')
       .addOrderBy('d.nombres', 'ASC');
+
+    applyInstitutionIdWhere(qb, 'd', institutionId);
 
     if (query?.estado) {
       qb.andWhere('d.estado = :estado', { estado: query.estado });
@@ -259,10 +302,19 @@ export class DocentesMaestrosService implements OnModuleInit {
     return qb;
   }
 
-  async findOne(id: number, anioEscolar?: number): Promise<DocenteDetail> {
+  async findOne(
+    id: number,
+    anioEscolar?: number,
+    req?: MaestrosAuthRequest,
+  ): Promise<DocenteDetail> {
+    const institutionId = resolveMaestrosInstitutionId(req);
     const docente = await this.getDocenteOrFail(id);
-    const anio = anioEscolar ?? new Date().getFullYear();
-    const [enriched] = await this.enrichDocentes([docente], anio);
+    if (institutionId != null) {
+      assertMaestroBelongsToInstitution(docente, institutionId);
+    }
+    const anio =
+      anioEscolar ?? (await this.periodosService.resolveAnioEscolarActual());
+    const [enriched] = await this.enrichDocentes([docente], anio, institutionId);
     return {
       ...enriched,
       totalAsignaciones: enriched.asignaciones.length,
@@ -320,7 +372,8 @@ export class DocentesMaestrosService implements OnModuleInit {
   ): Promise<PortalDocenteMiAulaResponse> {
     const docente = await this.findDocenteForUser(userId, username, true);
 
-    const anio = anioEscolar ?? new Date().getFullYear();
+    const anio =
+      anioEscolar ?? (await this.periodosService.resolveAnioEscolarActual());
     const detail = await this.findOne(docente.id, anio);
     const students = await this.studentRepo.find();
     const periodos = await this.horarioPeriodoRepo.find({
@@ -362,12 +415,13 @@ export class DocentesMaestrosService implements OnModuleInit {
           id: cursoKey,
           assignmentId: asg.id,
           cursoId: asg.cursoId,
+          curriculumId: asg.curriculumId ?? null,
           cursoNombre: asg.cursoNombre,
           nivel: asg.nivel.trim(),
           grado: gradoNorm,
           seccion: sec,
-          gradoLabel: `${gradoNorm} ${sec}`,
-          aulaLabel: `${asg.nivel.trim()} · ${gradoNorm} · ${sec}`,
+          gradoLabel: `${gradoLabelFromParts(asg.nivel, gradoNorm)} · Sec. ${sec}`,
+          aulaLabel: `${gradoLabelFromParts(asg.nivel, gradoNorm)} · Sec. ${sec}`,
           alumnosCount: alumnos.length,
           aforo: salon?.aforo ?? 0,
           horario: this.formatHorario(cardBlocks, periodos),
@@ -422,7 +476,8 @@ export class DocentesMaestrosService implements OnModuleInit {
   ): Promise<DocenteMisSalonesResponse> {
     const docente = await this.findDocenteForUser(userId, username, true);
 
-    const anio = anioEscolar ?? new Date().getFullYear();
+    const anio =
+      anioEscolar ?? (await this.periodosService.resolveAnioEscolarActual());
     const [detail] = await this.enrichDocentes([docente], anio);
     const alumnos = await this.studentRepo.find({
       where: { activo: true, estadoMatricula: 'activo' },
@@ -457,7 +512,11 @@ export class DocentesMaestrosService implements OnModuleInit {
     };
   }
 
-  async create(dto: CreateDocenteDto): Promise<DocenteDetail> {
+  async create(
+    dto: CreateDocenteDto,
+    req: MaestrosAuthRequest,
+  ): Promise<DocenteDetail> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const username = dto.username?.trim() || dto.email.split('@')[0];
     const especialidad = dto.especialidad.trim();
     const tipo = dto.tipo ?? tipoFromEspecialidad(especialidad);
@@ -480,6 +539,7 @@ export class DocentesMaestrosService implements OnModuleInit {
     try {
       const savedUser = await this.usersRepo.save(user);
       const docente = this.docenteRepo.create({
+        institutionId,
         userId: savedUser.id,
         nombres: savedUser.nombres,
         apellidos: savedUser.apellidos,
@@ -502,8 +562,14 @@ export class DocentesMaestrosService implements OnModuleInit {
     }
   }
 
-  async update(id: number, dto: UpdateDocenteDto): Promise<DocenteDetail> {
+  async update(
+    id: number,
+    dto: UpdateDocenteDto,
+    req: MaestrosAuthRequest,
+  ): Promise<DocenteDetail> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getDocenteOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
 
     if (dto.nombres !== undefined) current.nombres = dto.nombres.trim();
     if (dto.apellidos !== undefined) current.apellidos = dto.apellidos.trim();
@@ -550,8 +616,13 @@ export class DocentesMaestrosService implements OnModuleInit {
     }
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getDocenteOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
     current.estado = 'inactivo';
     await this.docenteRepo.save(current);
 
@@ -619,8 +690,20 @@ export class DocentesMaestrosService implements OnModuleInit {
   private async enrichDocentes(
     docentes: Docente[],
     anioEscolar: number,
+    institutionId?: number,
   ): Promise<DocenteDetail[]> {
     if (!docentes.length) return [];
+
+    const institutionIds =
+      institutionId != null
+        ? [institutionId]
+        : [...new Set(docentes.map((d) => d.institutionId))];
+    const institutions = institutionIds.length
+      ? await this.institutionRepo.find({ where: { id: In(institutionIds) } })
+      : [];
+    const institutionNombreById = new Map(
+      institutions.map((i) => [i.id, i.nombre]),
+    );
 
     const docenteIds = docentes.map((d) => d.id);
     const assignments = await this.assignmentRepo.find({
@@ -634,14 +717,20 @@ export class DocentesMaestrosService implements OnModuleInit {
       : [];
     const subjectById = new Map(subjects.map((s) => [s.id, s]));
 
-    const salones = await this.salonRepo.find({
-      where: { anioEscolar, activo: true },
-      order: { nivel: 'ASC', grado: 'ASC', seccion: 'ASC' },
-    });
+    const salones = institutionIds.length
+      ? await this.salonRepo.find({
+          where: {
+            anioEscolar,
+            activo: true,
+            institutionId: In(institutionIds),
+          },
+          order: { nivel: 'ASC', grado: 'ASC', seccion: 'ASC' },
+        })
+      : [];
     const salonIndex = new Map<string, Salon>();
     for (const salon of salones) {
       salonIndex.set(
-        this.salonKey(salon.nivel, salon.grado, salon.seccion),
+        `${salon.institutionId}|${this.salonKey(salon.nivel, salon.grado, salon.seccion)}`,
         salon,
       );
     }
@@ -655,7 +744,10 @@ export class DocentesMaestrosService implements OnModuleInit {
     }
 
     return docentes.map((docente) => {
-      const meta = this.mapDocenteMeta(docente);
+      const meta = this.mapDocenteMeta(
+        docente,
+        institutionNombreById.get(docente.institutionId),
+      );
       const userAssignments = byDocente.get(docente.id) ?? [];
 
       const asignaciones = this.mergeAsignacionesDuplicadas(
@@ -668,7 +760,7 @@ export class DocentesMaestrosService implements OnModuleInit {
           const gradoNorm = normalizeGradoMatricula(a.grado);
           const assignmentSalones = (a.secciones ?? []).map((sec) => {
             const salon = salonIndex.get(
-              this.salonKey(a.nivel, gradoNorm, sec),
+              `${docente.institutionId}|${this.salonKey(a.nivel, gradoNorm, sec)}`,
             );
             return {
               seccion: sec.trim().toUpperCase(),
@@ -680,6 +772,7 @@ export class DocentesMaestrosService implements OnModuleInit {
             id: a.id,
             cursoId: a.cursoId,
             cursoNombre: subject?.nombre ?? `Curso #${a.cursoId}`,
+            curriculumId: a.curriculumId ?? subject?.curriculumId ?? null,
             nivel: a.nivel.trim(),
             grado: gradoNorm,
             secciones: (a.secciones ?? []).map((s) => s.trim().toUpperCase()),
@@ -726,12 +819,17 @@ export class DocentesMaestrosService implements OnModuleInit {
     });
   }
 
-  private mapDocenteMeta(docente: Docente): Omit<
+  private mapDocenteMeta(
+    docente: Docente,
+    institutionNombre?: string,
+  ): Omit<
     DocenteListItem,
     'horasAsignadas' | 'totalAsignaciones' | 'totalSalones'
   > {
     return {
       id: docente.id,
+      institutionId: docente.institutionId,
+      institutionNombre,
       nombres: docente.nombres,
       apellidos: docente.apellidos,
       nombreCompleto: `${docente.apellidos}, ${docente.nombres}`,

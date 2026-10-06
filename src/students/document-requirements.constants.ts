@@ -175,6 +175,19 @@ export function tiposEquivalentes(a: string, b: string): boolean {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+export interface DocumentoArchivoVista {
+  versionId: number;
+  version: number;
+  nombreArchivo: string;
+  mimeType: string;
+  tamanoBytes: number;
+  sha256: string;
+  url: string;
+  vigenciaHasta: string | null;
+  uploadedAt: string;
+  uploadedByNombre: string;
+}
+
 export interface DocumentoAlmacenado {
   id?: number;
   tipo: string;
@@ -182,6 +195,7 @@ export interface DocumentoAlmacenado {
   estado: 'pendiente' | 'entregado' | 'vencido';
   fechaEntrega?: string;
   imagenUrl?: string;
+  archivo?: DocumentoArchivoVista | null;
 }
 
 export interface DocumentoMatriculaVista {
@@ -193,6 +207,7 @@ export interface DocumentoMatriculaVista {
   fechaEntrega: string;
   imagenUrl?: string;
   registrado: boolean;
+  archivo?: DocumentoArchivoVista | null;
 }
 
 /** Combina requisitos del grado con documentos guardados en BD. */
@@ -218,6 +233,7 @@ export function combinarRequisitosConDocumentos(
         numero: doc.numero ?? '',
         fechaEntrega: doc.fechaEntrega ?? '',
         imagenUrl: doc.imagenUrl,
+        archivo: doc.archivo,
         registrado: true,
       };
     }
@@ -245,6 +261,7 @@ export function combinarRequisitosConDocumentos(
         numero: doc.numero ?? '',
         fechaEntrega: doc.fechaEntrega ?? '',
         imagenUrl: doc.imagenUrl,
+        archivo: doc.archivo,
         registrado: true,
       });
     }

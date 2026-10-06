@@ -5,10 +5,13 @@ export type MaestroPeriodoTipo = 'bimestre' | 'trimestre' | 'semestre';
 export type MaestroPeriodoEstado = 'pendiente' | 'en_curso' | 'cerrado';
 
 @Entity('maestros_periodos_academicos')
-@Index(['anioEscolar', 'numero'], { unique: true })
+@Index(['institutionId', 'anioEscolar', 'numero'], { unique: true })
 export class MaestroPeriodoAcademico {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int' })
+  institutionId: number;
 
   @Column({ type: 'int' })
   anioEscolar: number;

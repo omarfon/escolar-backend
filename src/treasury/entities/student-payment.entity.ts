@@ -8,6 +8,9 @@ export class StudentPayment {
   @Column()
   chargeId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   monto: number;
 

@@ -1,0 +1,76 @@
+openapi: 3.0.3
+info:
+  title: Historial de matrícula
+  version: '1.1'
+  description: |
+    Vista consolidada de trayectoria de matrícula por estudiante (SIAGIE — Gestión de Matrícula).
+    Consolida matrícula por año, retiros, reingresos, cambios de sección, continuidad, evaluaciones,
+    retroalimentación y traslados entre IE (creación y cada transición de estado).
+    Las consultas registran auditoría con actor, fecha, módulo y entidad `historial_matricula`.
+paths:
+  /api/v1/enrollment-history/context:
+    get:
+      summary: Contexto institucional y catálogo de tipos de evento
+      tags: [Historial de matrícula]
+      security: [{ bearerAuth: [] }]
+      description: |
+        Requiere permiso `matricula.historial`, `matricula.ver` o `matricula.exportar`.
+        Registra auditoría de consulta.
+      responses:
+        '200':
+          description: Contexto institucional y tipos de evento
+        '401':
+          description: No autenticado
+        '403':
+          description: Sin permiso
+  /api/v1/enrollment-history:
+    get:
+      summary: Listado de estudiantes para consulta de historial
+      tags: [Historial de matrícula]
+      security: [{ bearerAuth: [] }]
+      description: |
+        Requiere permiso `matricula.historial`, `matricula.ver` o `matricula.exportar`.
+        Registra auditoría de consulta.
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Búsqueda por nombre, DNI o código
+      responses:
+        '200':
+          description: Listado con items y total
+        '401':
+          description: No autenticado
+        '403':
+          description: Sin permiso
+  /api/v1/enrollment-history/{studentId}:
+    get:
+      summary: Detalle consolidado de historial de matrícula
+      tags: [Historial de matrícula]
+      security: [{ bearerAuth: [] }]
+      description: |
+        Requiere permiso `matricula.historial`, `matricula.ver` o `matricula.exportar`.
+        Registra auditoría de consulta con ID del estudiante.
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: |
+            Detalle con eventos de matrícula y trayectoria académica.
+            Los eventos `traslado` incluyen metadata (`transferRequestId`, `codigo`, transiciones)
+            filtrados por ámbito IE, UGEL, DRE o MINEDU.
+        '401':
+          description: No autenticado
+        '404':
+          description: Estudiante no encontrado
+        '403':
+          description: Sin permiso
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

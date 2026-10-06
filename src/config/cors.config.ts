@@ -1,5 +1,6 @@
 import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
 import { ConfigService } from '@nestjs/config';
+import { TENANT_INSTITUTION_HEADER } from '../auth/tenant-scope.util';
 
 const DEFAULT_DEV_ORIGINS = [
   'http://localhost:4200',
@@ -132,6 +133,9 @@ export function buildCorsOptions(config: ConfigService): CorsOptions {
       'X-Requested-With',
       'Cache-Control',
       'Pragma',
+      'Idempotency-Key',
+      TENANT_INSTITUTION_HEADER,
+      'X-Institution-Id',
     ],
     exposedHeaders: ['Content-Disposition'],
     optionsSuccessStatus: 204,

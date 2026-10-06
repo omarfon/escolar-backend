@@ -12,6 +12,9 @@ export class Promedio {
   @Column()
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ length: 120 })
   curso: string;
 

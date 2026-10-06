@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -388,6 +389,12 @@ export class UpdateExpedienteDto {
   @ValidateNested({ each: true })
   @Type(() => DocumentoDto)
   documentos?: DocumentoDto[];
+
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  auditMotivo?: string;
 }
 
 export class UpsertDocumentoDto {

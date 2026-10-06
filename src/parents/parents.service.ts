@@ -38,6 +38,12 @@ import { eventAppliesToChild } from './parent-events.util';
 import { GradingConfigService } from '../grading/grading-config.service';
 import { PromediosService } from '../promedios/promedios.service';
 import { MailService } from '../mail/mail.service';
+import { ConductIncidentsService } from '../conduct-incidents/conduct-incidents.service';
+import {
+  buildConductKpis,
+  calcNivelConducta,
+  ConductIncidentResponse,
+} from '../conduct-incidents/conduct-incidents.mapper';
 import type { CursoPromedio } from '../promedios/promedios.types';
 
 export interface HijoResumen {
@@ -50,6 +56,7 @@ export interface HijoResumen {
   seccion: string;
   aulaLabel: string;
   parentesco: string;
+  institutionId: number | null;
 }
 
 export interface CursoSeguimiento {
@@ -118,6 +125,33 @@ export interface ParentClasesResponse {
   estudiante: HijoResumen;
   temario: Awaited<ReturnType<TemarioService['findForStudentId']>>;
   recursos: Awaited<ReturnType<ResourcesService['findAll']>>;
+}
+
+export interface ParentConductItem {
+  id: number;
+  tipo: string;
+  descripcion: string;
+  fecha: string;
+  lugar: string;
+  reportadoPor: string;
+  estado: string;
+  medida: string;
+  observaciones: string;
+}
+
+export interface ParentConductResponse {
+  estudiante: HijoResumen;
+  conductaNota: string;
+  resumen: {
+    leves: number;
+    graves: number;
+    muyGraves: number;
+    reconocimientos: number;
+    totalDemeritos: number;
+    nivel: string;
+  };
+  meritos: ParentConductItem[];
+  demeritos: ParentConductItem[];
 }
 
 export interface SeguimientoAcademico {
@@ -200,6 +234,7 @@ export class ParentsService {
     private readonly gradingConfigService: GradingConfigService,
     private readonly promediosService: PromediosService,
     private readonly mailService: MailService,
+    private readonly conductIncidentsService: ConductIncidentsService,
   ) {}
 
   async getChildProfile(studentId: number, parentEmail: string) {
@@ -481,6 +516,7 @@ export class ParentsService {
       nombreCompleto: hijo.nombreCompleto,
       aulaLabel: hijo.aulaLabel,
       eventos: allEvents
+        .filter((event) => event.institutionId === hijo.institutionId)
         .filter((event) => eventAppliesToChild(event, hijo))
         .sort((a, b) => {
           const byDate = a.fechaInicio.localeCompare(b.fechaInicio);
@@ -566,6 +602,50 @@ export class ParentsService {
       estudiante: this.toHijoResumen(student, parentesco),
       temario,
       recursos,
+    };
+  }
+
+  async getConductForChild(
+    studentId: number,
+    parentEmail: string,
+  ): Promise<ParentConductResponse> {
+    const parentesco = await this.assertParentAccess(studentId, parentEmail);
+    const student = await this.studentsService.findOne(studentId);
+    const incidents = await this.conductIncidentsService.findAll({ studentId });
+    const kpis = buildConductKpis(incidents);
+    const nivel = calcNivelConducta(incidents);
+
+    return {
+      estudiante: this.toHijoResumen(student, parentesco),
+      conductaNota: student.conductaNota ?? 'AD',
+      resumen: {
+        leves: kpis.leves,
+        graves: kpis.graves,
+        muyGraves: kpis.muyGraves,
+        reconocimientos: kpis.reconocimientos,
+        totalDemeritos: kpis.leves + kpis.graves + kpis.muyGraves,
+        nivel,
+      },
+      meritos: incidents
+        .filter((i) => i.tipo === 'reconocimiento')
+        .map((i) => this.toParentConductItem(i)),
+      demeritos: incidents
+        .filter((i) => i.tipo !== 'reconocimiento')
+        .map((i) => this.toParentConductItem(i)),
+    };
+  }
+
+  private toParentConductItem(item: ConductIncidentResponse): ParentConductItem {
+    return {
+      id: item.id,
+      tipo: item.tipo,
+      descripcion: item.descripcion,
+      fecha: item.fecha,
+      lugar: item.lugar,
+      reportadoPor: item.reportadoPor,
+      estado: item.estado,
+      medida: item.medida,
+      observaciones: item.observaciones,
     };
   }
 
@@ -854,6 +934,7 @@ export class ParentsService {
       nivel: string;
       grado: string;
       seccion: string;
+      institutionId?: number | null;
     },
     parentesco: string,
   ): HijoResumen {
@@ -867,6 +948,7 @@ export class ParentsService {
       seccion: student.seccion,
       aulaLabel: `${student.nivel} · ${student.grado} ${student.seccion}`,
       parentesco,
+      institutionId: student.institutionId ?? null,
     };
   }
 }

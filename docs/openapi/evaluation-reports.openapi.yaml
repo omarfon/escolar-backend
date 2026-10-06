@@ -1,0 +1,156 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Reportes de evaluación
+  version: 1.0.0
+  description: Reportes básicos con filtros, totales, exportación y auditoría.
+
+paths:
+  /evaluation-reports/context:
+    get:
+      summary: Contexto institucional y catálogos de filtros
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Contexto vigente
+        '403':
+          description: Sin permiso evaluacion.reportes
+
+  /evaluation-reports:
+    get:
+      summary: Consulta paginada de reporte
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: tipo
+          required: true
+          schema:
+            type: string
+            enum: [promedios, notas, competencias, diagnostico]
+        - in: query
+          name: nivel
+          schema: { type: string }
+        - in: query
+          name: grado
+          schema: { type: string }
+        - in: query
+          name: seccion
+          schema: { type: string }
+        - in: query
+          name: bimestre
+          schema: { type: integer, minimum: 1, maximum: 4 }
+        - in: query
+          name: anio
+          schema: { type: integer }
+        - in: query
+          name: curso
+          schema: { type: string }
+        - in: query
+          name: dre
+          schema: { type: string }
+        - in: query
+          name: ugel
+          schema: { type: string }
+        - in: query
+          name: busqueda
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        '200':
+          description: Reporte con metadatos, columnas, filas y paginación
+        '400':
+          description: Validación de filtros
+        '403':
+          description: Sin permiso
+
+  /evaluation-reports/export:
+    get:
+      summary: Exportación síncrona (CSV, XLSX, PDF)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: format
+          required: true
+          schema:
+            type: string
+            enum: [csv, xlsx, pdf]
+        - in: query
+          name: tipo
+          required: true
+          schema:
+            type: string
+            enum: [promedios, notas, competencias, diagnostico]
+      responses:
+        '200':
+          description: Archivo descargable
+        '400':
+          description: Volumen excede límite síncrono
+        '403':
+          description: Sin permiso evaluacion.exportar
+
+  /evaluation-reports/jobs:
+    post:
+      summary: Encolar exportación asíncrona para reportes pesados
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tipo, format]
+              properties:
+                tipo:
+                  type: string
+                  enum: [promedios, notas, competencias, diagnostico]
+                format:
+                  type: string
+                  enum: [csv, xlsx, pdf]
+      responses:
+        '201':
+          description: Trabajo encolado o indicación de exportación síncrona
+
+  /evaluation-reports/jobs/{id}:
+    get:
+      summary: Estado del trabajo de exportación
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Estado del job
+
+  /evaluation-reports/jobs/{id}/download:
+    get:
+      summary: Descargar archivo generado por job
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Archivo listo
+        '409':
+          description: Job pendiente o fallido
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

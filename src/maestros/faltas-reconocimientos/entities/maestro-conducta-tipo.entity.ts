@@ -1,14 +1,18 @@
-import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { MaestroConductaDescripcion } from './maestro-conducta-descripcion.entity';
 
 export type MaestroConductaCategoria = 'falta' | 'reconocimiento';
 
 @Entity('maestros_conducta_tipos')
+@Index(['institutionId', 'codigo'], { unique: true })
 export class MaestroConductaTipo {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ length: 40, unique: true })
+  @Column({ type: 'int' })
+  institutionId: number;
+
+  @Column({ length: 40 })
   codigo: string;
 
   @Column({ length: 80 })

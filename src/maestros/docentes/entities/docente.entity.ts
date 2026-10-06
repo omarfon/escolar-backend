@@ -1,12 +1,18 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 export type DocenteTipo = 'nombrado' | 'contratado';
 export type DocenteEstado = 'activo' | 'inactivo' | 'bloqueado';
 
 @Entity('docentes')
+@Index(['institutionId', 'dni'], { unique: true })
+@Index(['institutionId', 'email'], { unique: true })
+@Index(['institutionId', 'username'], { unique: true })
 export class Docente {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int' })
+  institutionId: number;
 
   /** Usuario del sistema vinculado (login). Nullable si solo es registro académico. */
   @Column({ type: 'int', nullable: true, unique: true })
@@ -18,13 +24,13 @@ export class Docente {
   @Column({ length: 80 })
   apellidos: string;
 
-  @Column({ length: 8, unique: true })
+  @Column({ length: 8 })
   dni: string;
 
-  @Column({ length: 120, unique: true })
+  @Column({ length: 120 })
   email: string;
 
-  @Column({ length: 50, unique: true })
+  @Column({ length: 50 })
   username: string;
 
   @Column({ length: 30, default: '' })

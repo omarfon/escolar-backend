@@ -1,10 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
+import { AuthCacheService } from '../auth/auth-cache.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { BulkUserRowDto } from './dto/bulk-import-users.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UserRoleAssignmentResponse } from './dto/user-role-assignment.dto';
 import { User } from './entities/user.entity';
+import { UserRolesService } from './user-roles.service';
 
 export interface UserResponse {
   id: number;
@@ -15,6 +18,8 @@ export interface UserResponse {
   username: string;
   telefono: string;
   rol: string;
+  roles: string[];
+  roleAssignments: UserRoleAssignmentResponse[];
   sede: string;
   estado: string;
   cargo: string;
@@ -58,6 +63,8 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
+    private readonly userRolesService: UserRolesService,
+    private readonly authCache: AuthCacheService,
   ) {}
 
   async create(dto: CreateUserDto): Promise<UserResponse> {
@@ -72,6 +79,16 @@ export class UsersService {
       ultimoAcceso: null,
     });
     const saved = await this.usersRepo.save(entity);
+
+    if (dto.roleAssignments?.length) {
+      await this.userRolesService.setAssignments(saved.id, {
+        motivo: dto.roleAssignmentsMotivo ?? 'Asignación al crear usuario',
+        assignments: dto.roleAssignments,
+      });
+    } else {
+      await this.userRolesService.ensureLegacyAssignment(saved.id, saved.rol);
+    }
+
     return this.toResponse(saved);
   }
 
@@ -117,7 +134,7 @@ export class UsersService {
     const users = await this.usersRepo.find({
       order: { apellidos: 'ASC', nombres: 'ASC' },
     });
-    return users.map((u) => this.toResponse(u));
+    return Promise.all(users.map((u) => this.toResponse(u)));
   }
 
   async findOne(id: number): Promise<UserResponse> {
@@ -131,6 +148,47 @@ export class UsersService {
       .addSelect('user.password')
       .where('user.username = :login OR user.email = :login', { login: username })
       .getOne();
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    return this.usersRepo.findOne({
+      where: { email: email.trim().toLowerCase() },
+    });
+  }
+
+  async findAuthUserById(id: number): Promise<User | null> {
+    return this.usersRepo
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
+  async getSessionVersion(id: number): Promise<number> {
+    const row = await this.usersRepo
+      .createQueryBuilder('user')
+      .select(['user.id', 'user.sessionVersion'])
+      .where('user.id = :id', { id })
+      .getOne();
+    return row?.sessionVersion ?? 0;
+  }
+
+  async updatePasswordAndInvalidateSessions(
+    id: number,
+    hashedPassword: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const repo = manager ? manager.getRepository(User) : this.usersRepo;
+    await repo
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        password: hashedPassword,
+        sessionVersion: () => '"sessionVersion" + 1',
+      })
+      .where('id = :id', { id })
+      .execute();
+    this.authCache.invalidate(id);
   }
 
   async update(id: number, dto: UpdateUserDto): Promise<UserResponse> {
@@ -166,7 +224,8 @@ export class UsersService {
     return user;
   }
 
-  private toResponse(user: User): UserResponse {
+  private async toResponse(user: User): Promise<UserResponse> {
+    const effective = await this.userRolesService.resolveEffectiveAuth(user.id);
     return {
       id: user.id,
       nombres: user.nombres,
@@ -175,7 +234,9 @@ export class UsersService {
       email: user.email,
       username: user.username,
       telefono: user.telefono,
-      rol: user.rol,
+      rol: effective.primaryRole,
+      roles: effective.roleCodigos,
+      roleAssignments: effective.assignments,
       sede: user.sede,
       estado: user.estado,
       cargo: user.cargo,

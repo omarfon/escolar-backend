@@ -11,6 +11,9 @@ export class ReportCard {
   @Column()
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ type: 'int' })
   bimestre: number;
 

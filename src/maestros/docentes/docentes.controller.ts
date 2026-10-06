@@ -17,6 +17,7 @@ import { RequestUser } from '../../auth/interfaces/request-user.interface';
 import { CreateDocenteDto, UpdateDocenteDto } from './dto/docente.dto';
 import { UpdateMiPerfilDocenteDto } from './dto/update-mi-perfil-docente.dto';
 import { DocentesMaestrosService } from './docentes.service';
+import { MaestrosAuthRequest } from '../common/maestros-tenant.util';
 
 type AuthRequest = Request & { user?: RequestUser };
 
@@ -33,6 +34,7 @@ export class DocentesMaestrosController {
     @Query('anioEscolar') anioEscolar?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Req() req?: AuthRequest,
   ) {
     const query = {
       estado: estado || undefined,
@@ -44,6 +46,7 @@ export class DocentesMaestrosController {
       query,
       page ? Math.max(1, Number(page)) : 1,
       pageSize ? Math.max(1, Number(pageSize)) : 10,
+      req as MaestrosAuthRequest,
     );
   }
 
@@ -113,17 +116,19 @@ export class DocentesMaestrosController {
   findOne(
     @Param('id', ParseIntPipe) id: number,
     @Query('anioEscolar') anioEscolar?: string,
+    @Req() req?: AuthRequest,
   ) {
     return this.docentesService.findOne(
       id,
       anioEscolar ? Number(anioEscolar) : undefined,
+      req as MaestrosAuthRequest,
     );
   }
 
   @Post()
   @RequirePermiso('docentes.crear', 'docentes.editar')
-  create(@Body() dto: CreateDocenteDto) {
-    return this.docentesService.create(dto);
+  create(@Body() dto: CreateDocenteDto, @Req() req: AuthRequest) {
+    return this.docentesService.create(dto, req as MaestrosAuthRequest);
   }
 
   @Patch(':id')
@@ -131,13 +136,14 @@ export class DocentesMaestrosController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateDocenteDto,
+    @Req() req: AuthRequest,
   ) {
-    return this.docentesService.update(id, dto);
+    return this.docentesService.update(id, dto, req as MaestrosAuthRequest);
   }
 
   @Delete(':id')
   @RequirePermiso('docentes.editar')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.docentesService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: AuthRequest) {
+    return this.docentesService.remove(id, req as MaestrosAuthRequest);
   }
 }

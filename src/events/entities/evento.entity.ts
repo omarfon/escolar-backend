@@ -28,6 +28,9 @@ export class Evento {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ length: 150 })
   titulo: string;
 

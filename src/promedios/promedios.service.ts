@@ -321,8 +321,32 @@ export class PromediosService {
     return synced;
   }
 
+  /** Sincroniza promedios tipo competencia tras guardado masivo por curso. */
+  async syncCompetencyCoursePromedios(input: {
+    cursoNombre: string;
+    bimestre: number;
+    anio: number;
+    alumnos: Array<{ studentId: number; nivelLogro: string | null }>;
+  }): Promise<number> {
+    let synced = 0;
+    for (const alumno of input.alumnos) {
+      if (!alumno.nivelLogro) continue;
+      await this.upsertPromedio({
+        studentId: alumno.studentId,
+        curso: input.cursoNombre,
+        tipo: 'competencia',
+        bimestre: input.bimestre,
+        anio: input.anio,
+        valorNumerico: null,
+        nivelLogro: alumno.nivelLogro as PromedioNivelLogro,
+      });
+      synced++;
+    }
+    return synced;
+  }
+
   private async filterStudents(query: PromediosQuery) {
-    let filtered = (await this.studentsService.findAll()).filter(
+    let filtered = (await this.studentsService.findAll(query.institutionId)).filter(
       isStudentMatriculaActiva,
     );
     if (query.nivel) filtered = filtered.filter((s) => s.nivel === query.nivel);

@@ -16,6 +16,9 @@ export class ConductIncident {
   @Column({ type: 'int' })
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ length: 40 })
   tipo: string;
 

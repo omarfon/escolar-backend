@@ -35,6 +35,7 @@ import { prepareAttendanceRecurrentAlertsTables } from './attendances/attendance
 import { prepareGradingScaleConfigTables } from './grading/grading-scale-config-migration';
 import { prepareCompetencyChangeAuditTables } from './competency-evaluations/competency-change-audit-migration';
 import { prepareDiagnosticEvaluationsTables } from './diagnostic-evaluations/diagnostic-evaluations-migration';
+import { prepareEvaluationReportJobsTable } from './evaluation-reports/evaluation-report-jobs-migration';
 import { prepareCurriculaPermissions } from './curricula/curricula-permissions-migration';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -71,6 +72,7 @@ import { CurriculaModule } from './curricula/curricula.module';
 import { HorariosModule } from './horarios/horarios.module';
 import { CompetencyEvaluationsModule } from './competency-evaluations/competency-evaluations.module';
 import { DiagnosticEvaluationsModule } from './diagnostic-evaluations/diagnostic-evaluations.module';
+import { EvaluationReportsModule } from './evaluation-reports/evaluation-reports.module';
 import { ReportCardsModule } from './report-cards/report-cards.module';
 import { TemarioModule } from './temario/temario.module';
 import { TreasuryModule } from './treasury/treasury.module';
@@ -148,6 +150,7 @@ import { DatabaseSeedService } from './database/database-seed.service';
         await prepareGradingScaleConfigTables(migrationDs);
         await prepareCompetencyChangeAuditTables(migrationDs);
         await prepareDiagnosticEvaluationsTables(migrationDs);
+        await prepareEvaluationReportJobsTable(migrationDs);
         await prepareCurriculaPermissions(migrationDs);
         const nodeEnv = process.env.NODE_ENV ?? 'development';
         await prepareMultiInstitution(migrationDs, {
@@ -200,6 +203,7 @@ import { DatabaseSeedService } from './database/database-seed.service';
     HorariosModule,
     CompetencyEvaluationsModule,
     DiagnosticEvaluationsModule,
+    EvaluationReportsModule,
     ReportCardsModule,
     TemarioModule,
     TreasuryModule,

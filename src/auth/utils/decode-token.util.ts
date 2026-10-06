@@ -12,6 +12,10 @@ interface TokenPayload {
 
   iat?: number;
 
+  sv?: number;
+
+  institutionId?: number | null;
+
 }
 
 

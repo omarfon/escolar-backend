@@ -24,21 +24,24 @@ export class DashboardService {
     private readonly salonesService: SalonesService,
   ) {}
 
-  async getStats(anioEscolar?: number): Promise<DashboardStatsDto> {
+  async getStats(anioEscolar?: number, institutionId?: number): Promise<DashboardStatsDto> {
     const anio = anioEscolar ?? new Date().getFullYear();
+    const alumnoWhere = {
+      activo: true,
+      estadoMatricula: 'activo' as const,
+      ...(institutionId === undefined ? {} : { institutionId }),
+    };
 
     const [estudiantesMatriculados, docentesActivos, asistencia, treasury, vacantes] =
       await Promise.all([
-        this.studentRepo.count({
-          where: { activo: true, estadoMatricula: 'activo' },
-        }),
+        this.studentRepo.count({ where: alumnoWhere }),
         this.docenteRepo.count({ where: { estado: 'activo' } }),
-        this.calcAsistenciaPromedio(anio),
-        this.treasuryService.getTreasurySummary(anio),
+        this.calcAsistenciaPromedio(anio, institutionId),
+        this.treasuryService.getTreasurySummary(anio, institutionId),
         this.loadVacantesDisponibles(anio),
       ]);
 
-    const familiasConDeuda = await this.countFamiliasConDeuda(anio);
+    const familiasConDeuda = await this.countFamiliasConDeuda(anio, institutionId);
     const pagosPendientes =
       Math.round((treasury.pendiente + treasury.vencido) * 100) / 100;
 
@@ -85,6 +88,7 @@ export class DashboardService {
 
   private async calcAsistenciaPromedio(
     anio: number,
+    institutionId?: number,
   ): Promise<{ promedio: number; total: number }> {
     const ini = `${anio}-01-01`;
     const fin = `${anio}-12-31`;
@@ -94,6 +98,9 @@ export class DashboardService {
       .select('a.estado', 'estado')
       .addSelect('COUNT(*)', 'count')
       .where('a.fecha >= :ini AND a.fecha <= :fin', { ini, fin })
+      .andWhere(institutionId === undefined ? '1=1' : 'a.institutionId = :institutionId', {
+        institutionId,
+      })
       .groupBy('a.estado')
       .getRawMany<{ estado: string; count: string }>();
 
@@ -112,9 +119,12 @@ export class DashboardService {
     return { promedio, total };
   }
 
-  private async countFamiliasConDeuda(anio: number): Promise<number> {
+  private async countFamiliasConDeuda(anio: number, institutionId?: number): Promise<number> {
     const charges = await this.chargeRepo.find({
-      where: { anioEscolar: anio },
+      where: {
+        anioEscolar: anio,
+        ...(institutionId === undefined ? {} : { institutionId }),
+      },
     });
 
     const conDeuda = new Set<number>();

@@ -15,6 +15,15 @@ import {
   FormulaEscalaLogro,
 } from './entities/maestro-formula-evaluacion.entity';
 import { MAESTRO_FORMULAS_EVALUACION_SEED } from './formulas-evaluacion-seed.data';
+import { Institution } from '../../institution/entities/institution.entity';
+import {
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosInstitutionId,
+  resolveSeedInstitutionId,
+} from '../common/maestros-tenant.util';
 import {
   normalizeComponentes,
   validateComponentes,
@@ -40,6 +49,7 @@ export interface ResolveFormulaQuery {
   grado?: string;
   curso?: string;
   bimestre?: number;
+  institutionId?: number;
 }
 
 @Injectable()
@@ -47,21 +57,38 @@ export class FormulasEvaluacionMaestrosService {
   constructor(
     @InjectRepository(MaestroFormulaEvaluacion)
     private readonly repo: Repository<MaestroFormulaEvaluacion>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
   ) {}
 
   async seedCatalogIfEmpty(): Promise<void> {
     await this.seedIfEmpty();
   }
 
-  async findAll(): Promise<MaestroFormulaEvaluacionResponse[]> {
-    const rows = await this.repo.find({
-      order: { esDefault: 'DESC', orden: 'ASC', id: 'ASC' },
-    });
+  async findAll(req?: MaestrosAuthRequest): Promise<MaestroFormulaEvaluacionResponse[]> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    if (req && institutionId == null) return [];
+
+    const qb = this.repo
+      .createQueryBuilder('f')
+      .orderBy('f.esDefault', 'DESC')
+      .addOrderBy('f.orden', 'ASC')
+      .addOrderBy('f.id', 'ASC');
+    applyInstitutionIdWhere(qb, 'f', institutionId);
+    const rows = await qb.getMany();
     return rows.map((row) => this.toResponse(row));
   }
 
-  async findOne(id: number): Promise<MaestroFormulaEvaluacionResponse> {
-    return this.toResponse(await this.getOrFail(id));
+  async findOne(
+    id: number,
+    req?: MaestrosAuthRequest,
+  ): Promise<MaestroFormulaEvaluacionResponse> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    const row = await this.getOrFail(id);
+    if (institutionId != null) {
+      assertMaestroBelongsToInstitution(row, institutionId);
+    }
+    return this.toResponse(row);
   }
 
   async resolve(
@@ -74,10 +101,14 @@ export class FormulasEvaluacionMaestrosService {
   async resolveEntity(
     query: ResolveFormulaQuery,
   ): Promise<MaestroFormulaEvaluacion> {
-    const rows = await this.repo.find({
-      where: { activo: true },
-      order: { esDefault: 'DESC', orden: 'ASC', id: 'ASC' },
-    });
+    const qb = this.repo
+      .createQueryBuilder('f')
+      .where('f.activo = true')
+      .orderBy('f.esDefault', 'DESC')
+      .addOrderBy('f.orden', 'ASC')
+      .addOrderBy('f.id', 'ASC');
+    applyInstitutionIdWhere(qb, 'f', query.institutionId);
+    const rows = await qb.getMany();
 
     const nivel = query.nivel?.trim() ?? '';
     const grado = query.grado?.trim() ?? '';
@@ -105,17 +136,20 @@ export class FormulasEvaluacionMaestrosService {
 
   async create(
     dto: CreateMaestroFormulaEvaluacionDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroFormulaEvaluacionResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const componentes = normalizeComponentes(dto.componentes);
     const validation = validateComponentes(componentes);
     if (validation) throw new BadRequestException(validation);
 
     if (dto.esDefault) {
-      await this.repo.update({ esDefault: true }, { esDefault: false });
+      await this.repo.update({ institutionId, esDefault: true }, { esDefault: false });
     }
 
     const saved = await this.repo.save(
       this.repo.create({
+        institutionId,
         nombre: dto.nombre.trim(),
         codigo: dto.codigo?.trim() ?? '',
         nivel: dto.nivel?.trim() ?? '',
@@ -136,8 +170,11 @@ export class FormulasEvaluacionMaestrosService {
   async update(
     id: number,
     dto: UpdateMaestroFormulaEvaluacionDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroFormulaEvaluacionResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
 
     if (dto.componentes) {
       const componentes = normalizeComponentes(dto.componentes);
@@ -157,7 +194,7 @@ export class FormulasEvaluacionMaestrosService {
     if (dto.estado !== undefined) current.activo = dto.estado === 'activo';
 
     if (dto.esDefault === true) {
-      await this.repo.update({ esDefault: true }, { esDefault: false });
+      await this.repo.update({ institutionId, esDefault: true }, { esDefault: false });
       current.esDefault = true;
     } else if (dto.esDefault === false) {
       current.esDefault = false;
@@ -167,8 +204,13 @@ export class FormulasEvaluacionMaestrosService {
     return this.toResponse(saved);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
     if (current.esDefault) {
       throw new BadRequestException(
         'No se puede desactivar la fórmula predeterminada. Asigne otra como predeterminada primero.',
@@ -209,8 +251,11 @@ export class FormulasEvaluacionMaestrosService {
 
   private async seedIfEmpty(): Promise<void> {
     if (await this.repo.count()) return;
+    const institutionId = await resolveSeedInstitutionId(this.institutionRepo);
     await this.repo.save(
-      MAESTRO_FORMULAS_EVALUACION_SEED.map((item) => this.repo.create(item)),
+      MAESTRO_FORMULAS_EVALUACION_SEED.map((item) =>
+        this.repo.create({ ...item, institutionId }),
+      ),
     );
   }
 

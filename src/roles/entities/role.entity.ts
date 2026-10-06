@@ -24,6 +24,9 @@ export class Role {
   @Column({ type: 'int', default: 0 })
   orden: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @OneToMany(() => RolePermission, (rp) => rp.role)
   rolePermissions: RolePermission[];
 }

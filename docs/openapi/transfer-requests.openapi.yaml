@@ -1,0 +1,336 @@
+openapi: 3.0.3
+info:
+  title: Gestión de traslados (origen y destino)
+  version: 1.11.0
+paths:
+  /api/v1/transfer-requests/context:
+    get:
+      summary: Contexto de la IE de origen, año escolar y permisos
+      responses:
+        '200':
+          description: Contexto institucional
+        '401':
+          description: Sin autenticación
+        '403':
+          description: Sin permiso de traslados
+  /api/v1/transfer-requests/students:
+    get:
+      summary: Busca estudiantes con matrícula vigente
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+      responses:
+        '200':
+          description: Coincidencias
+  /api/v1/transfer-requests:
+    get:
+      summary: Listado paginado según ámbito IE, UGEL, DRE o MINEDU
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: pageSize
+          schema: { type: integer }
+        - in: query
+          name: estado
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: alcance
+          schema:
+            type: string
+            enum: [destino]
+          description: Filtra solicitudes recibidas en la IE destino activa
+        - in: query
+          name: pendientes
+          schema: { type: boolean }
+          description: Solo enviada u observada (bandeja de aprobación destino)
+        - in: query
+          name: activos
+          schema: { type: boolean }
+          description: Solo solicitudes en curso (borrador, enviada, observada o aprobada)
+      responses:
+        '200':
+          description: Página de solicitudes
+    post:
+      summary: Crea o recupera una solicitud en borrador con código único
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - studentId
+                - ieDestinoNombre
+                - ieDestinoCodigoModular
+                - ieDestinoUgel
+                - ieDestinoDre
+                - motivo
+                - plazoHasta
+                - evidenciaTipo
+              properties:
+                studentId: { type: integer, minimum: 1 }
+                ieDestinoNombre: { type: string, minLength: 2 }
+                ieDestinoCodigoModular: { type: string, pattern: '^\\d{6,8}$' }
+                ieDestinoUgel: { type: string, minLength: 2 }
+                ieDestinoDre: { type: string, minLength: 2 }
+                motivo: { type: string, minLength: 10 }
+                plazoHasta: { type: string, format: date }
+                evidenciaTipo:
+                  type: string
+                  enum: [documento, referencia]
+                evidenciaDocumentId:
+                  type: integer
+                  minimum: 1
+                  description: Obligatorio si evidenciaTipo es documento
+                evidenciaReferencia:
+                  type: string
+                  minLength: 5
+                  maxLength: 200
+                  description: Obligatorio si evidenciaTipo es referencia
+                evidencia:
+                  type: string
+                  deprecated: true
+                  description: Solo compatibilidad legacy; preferir evidenciaTipo
+                idempotencyKey: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Solicitud persistida
+        '400':
+          description: Matrícula, identidad, plazo o IE inconsistente
+        '403':
+          description: Sin permiso o fuera del ámbito IE
+        '409':
+          description: Solicitud activa duplicada
+  /api/v1/transfer-requests/{id}/vacante-destino:
+    get:
+      summary: Cupos disponibles en la IE destino para el grado del estudiante
+      description: >
+        Consulta salones y matriculados en la IE de destino antes de aprobar.
+        Filtra por institutionId de la IE destino registrada en la solicitud.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Ocupación por sección y total de vacantes
+        '403':
+          description: Sin permiso o fuera del ámbito
+        '404':
+          description: Solicitud o estudiante no encontrado
+  /api/v1/transfer-requests/{id}/seguimiento:
+    get:
+      summary: Seguimiento del proceso con etapas, línea de tiempo y auditoría
+      description: >
+        Consolida eventos de la solicitud, notificaciones de estado y registros de auditoría
+        en una vista de seguimiento. Incluye `transparencia` con snapshot territorial congelado
+        (`datosCongeladosEn`), consulta de padrón destino actual (solo lectura) y vacante al aprobar.
+        RBAC por ámbito IE, UGEL, DRE o MINEDU. No altera el historial.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Seguimiento consolidado
+        '403':
+          description: Sin permiso o fuera del ámbito
+        '404':
+          description: Solicitud no encontrada
+  /api/v1/transfer-requests/{id}:
+    get:
+      summary: Detalle con eventos, notificaciones y transparencia del snapshot
+      description: >
+        Expone evidencia trazable, matrícula destino (si concluida) y bloque `transparencia`
+        con UGEL/DRE congelados al crear la solicitud y padrón destino actual para comparación.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Detalle
+    patch:
+      summary: Actualiza borrador u observada sin alterar la matrícula histórica
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Solicitud actualizada
+  /api/v1/transfer-requests/{id}/motivo:
+    post:
+      summary: Registra motivo u observación sin cambiar el estado
+      description: >
+        Añade un evento `registrar_motivo` al historial, opcionalmente actualiza la observación vigente.
+        IE origen, IE destino o ámbito territorial con permisos de traslados. Idempotencia por `idempotencyKey`.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, minLength: 5, maxLength: 500 }
+                observacion: { type: string, maxLength: 1000 }
+                idempotencyKey: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Motivo registrado con auditoría
+        '400':
+          description: Solicitud terminal o motivo inválido
+        '403':
+          description: Sin permiso para registrar motivo
+        '409':
+          description: Registro duplicado reciente
+  /api/v1/transfer-requests/{id}/transition:
+    post:
+      summary: Transición autorizada de estado
+      description: >
+        IE origen: enviar y cancelar. IE destino (permiso traslados.aprobar_destino): aprobar y rechazar
+        solicitudes enviadas u observadas. UGEL, DRE o MINEDU (permiso traslados.resolver): observar,
+        aprobar, rechazar y concluir.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accion]
+              properties:
+                accion:
+                  type: string
+                  enum: [enviar, cancelar, observar, aprobar, rechazar, concluir]
+                motivo: { type: string, minLength: 5, maxLength: 500 }
+                observacion: { type: string, maxLength: 1000 }
+                seccionDestino:
+                  type: string
+                  maxLength: 10
+                  description: Obligatoria al aprobar si hay más de una sección con vacantes
+      responses:
+        '201':
+          description: Estado actualizado, auditoría y notificación
+        '400':
+          description: Transición inválida, plazo vencido, motivo faltante, evidencia no trazable o sin vacante
+        '403':
+          description: Ámbito o permiso insuficiente
+  /api/v1/transfer-requests/notifications/mine:
+    get:
+      summary: Bandeja personal de notificaciones de traslado
+      description: >
+        Notificaciones dirigidas al usuario autenticado (`destinatarioUserId`).
+        `estadoEntrega=entregado` solo si hubo envío SMTP confirmado o lectura in-app.
+        Con MAIL desactivado permanecen en pendiente hasta marcar leída.
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50 }
+        - in: query
+          name: soloPendientes
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Página de notificaciones personales
+        '403':
+          description: Usuario no identificado
+  /api/v1/transfer-requests/{id}/notifications:
+    get:
+      summary: Listado paginado de notificaciones de estado
+      description: >
+        Plantillas por transición, trazabilidad de entrega (pendiente, enviado, entregado, fallido)
+        e idempotencia por clave y usuario destinatario. Entrega honesta: correo vía MailService
+        (`canalEntrega=email`) o confirmación in-app al marcar leída (`canalEntrega=in_app`).
+        Si MAIL está desactivado, `correoSimulado=true` y el estado permanece pendiente.
+        RBAC por ámbito IE, UGEL, DRE o MINEDU.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50 }
+        - in: query
+          name: estadoEntrega
+          schema:
+            type: string
+            enum: [pendiente, enviado, entregado, fallido]
+      responses:
+        '200':
+          description: Página de notificaciones
+        '403':
+          description: Sin permiso
+        '404':
+          description: Solicitud fuera de alcance
+  /api/v1/transfer-requests/{id}/notifications/{notificationId}/read:
+    patch:
+      summary: Marca una notificación como leída
+      description: Solo el destinatario según rol y ámbito puede marcarla leída.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: notificationId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Notificación leída
+        '403':
+          description: No es destinatario de la notificación
+        '404':
+          description: Notificación no encontrada
+  /api/v1/transfer-requests/{id}/notifications/retry:
+    post:
+      summary: Reintento controlado de notificaciones fallidas o pendientes
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notificationId: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Reintentos procesados
+        '400':
+          description: Sin reintentos disponibles
+        '403':
+          description: Sin permiso para reintentar
+        '404':
+          description: Sin notificaciones reintentables

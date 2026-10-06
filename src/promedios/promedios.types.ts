@@ -49,4 +49,5 @@ export interface PromediosQuery {
   seccion?: string;
   curso?: string;
   busqueda?: string;
+  institutionId?: number;
 }

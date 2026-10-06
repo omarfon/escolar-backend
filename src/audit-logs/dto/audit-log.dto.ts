@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import {
   IsDateString,
   IsIn,
@@ -5,7 +6,9 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 export class CreateAuditLogDto {
@@ -22,6 +25,10 @@ export class CreateAuditLogDto {
   @IsString()
   @MaxLength(60)
   usuarioRol?: string;
+
+  @IsOptional()
+  @IsInt()
+  institutionId?: number | null;
 
   @IsIn([
     'crear',
@@ -66,6 +73,15 @@ export class CreateAuditLogDto {
   @IsOptional()
   @IsIn(['info', 'warning', 'critical'])
   nivel?: string;
+
+  @IsOptional()
+  @IsIn(['success', 'error'])
+  resultado?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  correlationId?: string;
 }
 
 export class AuditLogFiltersDto {
@@ -96,4 +112,25 @@ export class AuditLogFiltersDto {
   @IsOptional()
   @IsString()
   busqueda?: string;
+
+  @IsOptional()
+  @IsIn(['accesos', 'todos'])
+  tipo?: string;
+
+  @IsOptional()
+  @IsIn(['success', 'error'])
+  resultado?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  pageSize?: number;
 }

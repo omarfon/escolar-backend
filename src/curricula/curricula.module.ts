@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { MaestrosModule } from '../maestros/maestros.module';
+import { Institution } from '../institution/entities/institution.entity';
 import { MaestroCurso } from '../maestros/cursos/entities/maestro-curso.entity';
 import { Salon } from '../maestros/salones/entities/salon.entity';
 import { Docente } from '../maestros/docentes/entities/docente.entity';
@@ -16,6 +18,7 @@ import { CurriculaService } from './curricula.service';
 
 @Module({
   imports: [
+    AuditLogsModule,
     MaestrosModule,
     TypeOrmModule.forFeature([
       Curriculum,
@@ -28,6 +31,7 @@ import { CurriculaService } from './curricula.service';
       MaestroCurso,
       Docente,
       Salon,
+      Institution,
     ]),
   ],
   controllers: [CurriculaController],

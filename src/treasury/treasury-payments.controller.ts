@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermisoGuard } from '../auth/guards/permiso.guard';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { RequestUser } from '../auth/interfaces/request-user.interface';
+import { institutionIdDeAlcance } from '../auth/siagie-access.util';
 import { PayVisaDto } from './dto/pay-visa.dto';
 import { RegisterPaymentDto } from './dto/register-payment.dto';
 import { TreasuryService } from './treasury.service';
@@ -28,9 +29,9 @@ export class TreasuryPaymentsController {
   @Get('summary')
   @RequirePermiso('tesoreria.ver', 'tesoreria.registrar', 'tesoreria.reportes')
   @UseGuards(PermisoGuard)
-  getSummary(@Query('anioEscolar') anioEscolar?: string) {
+  getSummary(@Query('anioEscolar') anioEscolar?: string, @Req() req?: AuthRequest) {
     const anio = anioEscolar ? Number(anioEscolar) : undefined;
-    return this.treasuryService.getTreasurySummary(anio);
+    return this.treasuryService.getTreasurySummary(anio, institutionIdDeAlcance(req?.user, req));
   }
 
   @Get('charges')
@@ -40,6 +41,7 @@ export class TreasuryPaymentsController {
     @Query('anioEscolar') anioEscolar?: string,
     @Query('q') q?: string,
     @Query('estado') estado?: string,
+    @Req() req?: AuthRequest,
   ) {
     const estadosValidos: ChargeEstado[] = [
       'pendiente',
@@ -55,6 +57,7 @@ export class TreasuryPaymentsController {
       anioEscolar: anioEscolar ? Number(anioEscolar) : undefined,
       q,
       estado: estadoValido,
+      institutionId: institutionIdDeAlcance(req?.user, req),
     });
   }
 
@@ -73,6 +76,7 @@ export class TreasuryPaymentsController {
       chargeId,
       dto,
       registradoPor,
+      institutionIdDeAlcance(user, req),
     );
   }
 
@@ -91,13 +95,14 @@ export class TreasuryPaymentsController {
       chargeId,
       dto,
       registradoPor,
+      institutionIdDeAlcance(user, req),
     );
   }
 
   @Get('payments/:paymentId/receipt')
   @RequirePermiso('tesoreria.ver', 'tesoreria.registrar')
   @UseGuards(PermisoGuard)
-  getReceipt(@Param('paymentId', ParseIntPipe) paymentId: number) {
-    return this.treasuryService.getPaymentReceiptStaff(paymentId);
+  getReceipt(@Param('paymentId', ParseIntPipe) paymentId: number, @Req() req: AuthRequest) {
+    return this.treasuryService.getPaymentReceiptStaff(paymentId, institutionIdDeAlcance(req.user, req));
   }
 }

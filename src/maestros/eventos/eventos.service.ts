@@ -19,6 +19,13 @@ import {
   normalizeEventEstado,
 } from '../../events/event-estado.util';
 import { MAESTRO_EVENTOS_SEED } from './eventos-seed.data';
+import { Institution } from '../../institution/entities/institution.entity';
+import {
+  assertMaestroBelongsToInstitution,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveSeedInstitutionId,
+} from '../common/maestros-tenant.util';
 
 export interface MaestroEventoResponse {
   id: number;
@@ -49,6 +56,8 @@ export class EventosMaestrosService {
   constructor(
     @InjectRepository(Evento)
     private readonly eventoRepo: Repository<Evento>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
   ) {}
@@ -57,10 +66,16 @@ export class EventosMaestrosService {
     if ((await this.eventoRepo.count()) > 0) return;
     await this.migrarDesdeSchoolEvents();
     if ((await this.eventoRepo.count()) > 0) return;
+    const institutionId = await resolveSeedInstitutionId(this.institutionRepo);
     await this.eventoRepo.save(
       MAESTRO_EVENTOS_SEED.map((e) => {
         const estado = computeEstadoFromDates(e.fechaInicio, e.fechaFin);
-        return this.eventoRepo.create({ ...e, estado, cancelado: false });
+        return this.eventoRepo.create({
+          ...e,
+          institutionId,
+          estado,
+          cancelado: false,
+        });
       }),
     );
   }
@@ -71,6 +86,7 @@ export class EventosMaestrosService {
     destinatarios?: string;
     estado?: string;
     busqueda?: string;
+    institutionId?: number;
   }): Promise<MaestroEventoResponse[]> {
     await this.syncEstadosLegacy();
 
@@ -93,6 +109,11 @@ export class EventosMaestrosService {
     if (query?.estado) {
       qb.andWhere('e.estado = :estado', { estado: query.estado });
     }
+    if (query?.institutionId) {
+      qb.andWhere('e.institutionId = :institutionId', {
+        institutionId: query.institutionId,
+      });
+    }
 
     let rows = await qb.getMany();
     let result = rows.map((row) => this.toResponse(row));
@@ -110,7 +131,11 @@ export class EventosMaestrosService {
     return result;
   }
 
-  async create(dto: CreateEventDto): Promise<MaestroEventoResponse> {
+  async create(
+    dto: CreateEventDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroEventoResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const vis = normalizeEventVisibility(dto);
     const fechaFin = dto.fechaFin ?? dto.fechaInicio;
     const estado = normalizeEventEstado({
@@ -120,6 +145,7 @@ export class EventosMaestrosService {
     });
     const saved = await this.eventoRepo.save(
       this.eventoRepo.create({
+        institutionId,
         titulo: dto.titulo.trim(),
         descripcion: dto.descripcion?.trim() ?? '',
         tipo: dto.tipo as Evento['tipo'],
@@ -142,8 +168,14 @@ export class EventosMaestrosService {
     return this.toResponse(saved);
   }
 
-  async update(id: number, dto: UpdateEventDto): Promise<MaestroEventoResponse> {
+  async update(
+    id: number,
+    dto: UpdateEventDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroEventoResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
     const vis =
       dto.visibilidad !== undefined ||
       dto.destinatarios !== undefined ||
@@ -199,8 +231,13 @@ export class EventosMaestrosService {
     return this.toResponse(saved);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const current = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(current, institutionId);
     current.cancelado = true;
     current.estado = 'cancelado';
     current.publicado = false;

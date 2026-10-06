@@ -1,0 +1,224 @@
+openapi: 3.0.3
+info:
+  title: Calendarización escolar — Años escolares
+  version: '1.3'
+  description: |
+    Registro formal de años escolares con periodos, activación, cierre e historial versionado.
+paths:
+  /api/v1/maestros/anios-escolares/context:
+    get:
+      summary: Contexto institucional y año vigente
+      responses:
+        '200':
+          description: Contexto de calendarización
+        '403':
+          description: Sin permiso
+  /api/v1/maestros/anios-escolares:
+    get:
+      summary: Listado paginado de años escolares
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: pageSize
+          schema: { type: integer }
+        - in: query
+          name: estado
+          schema:
+            type: string
+            enum: [planificado, activo, cerrado]
+      responses:
+        '200':
+          description: Página de años escolares
+    post:
+      summary: Registrar año escolar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anio, fechaInicio, fechaFin, tipoPeriodo]
+              properties:
+                anio: { type: integer, minimum: 2000 }
+                fechaInicio: { type: string, format: date }
+                fechaFin: { type: string, format: date }
+                tipoPeriodo: { type: string, enum: [bimestre, trimestre, semestre] }
+                motivo: { type: string }
+                generarPeriodos: { type: boolean }
+                activar: { type: boolean }
+                idempotencyKey: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Año escolar registrado
+        '409':
+          description: Duplicado o solapamiento
+  /api/v1/maestros/anios-escolares/{id}:
+    get:
+      summary: Detalle de año escolar con historial
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Año escolar con eventos de auditoría de dominio
+        '403':
+          description: Sin permiso
+        '404':
+          description: No encontrado
+  /api/v1/maestros/anios-escolares/{id}/dividir-periodos:
+    post:
+      summary: Dividir el año en periodos (bimestres/trimestres/semestre)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tipo: { type: string, enum: [bimestre, trimestre, semestre] }
+                motivo: { type: string }
+                sobreescribir: { type: boolean }
+                idempotencyKey: { type: string }
+      responses:
+        '201':
+          description: Periodos generados con historial versionado
+        '409':
+          description: Periodos existentes sin sobreescribir
+  /api/v1/maestros/anios-escolares/{id}/activar:
+    post:
+      summary: Activar año escolar (vigente)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '201':
+          description: Año activado
+  /api/v1/maestros/anios-escolares/{id}/publicar-comunicado:
+    post:
+      summary: Publicar comunicado del calendario escolar
+      description: |
+        Crea un comunicado institucional con resumen del calendario, marca el año como publicado,
+        incrementa la versión y publica eventos en borrador del rango lectivo.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                titulo: { type: string, maxLength: 120 }
+                cuerpo: { type: string, maxLength: 4000 }
+                destinatarios: { type: string, enum: [alumnos, padres, todos, docentes] }
+                prioridad: { type: string, enum: [alta, media, baja] }
+                fechaPublicacion: { type: string, format: date }
+                fechaVencimiento: { type: string, format: date }
+                motivo: { type: string, maxLength: 500 }
+                republicar: { type: boolean }
+                idempotencyKey: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Comunicado publicado y calendario versionado
+        '403':
+          description: Sin permiso calendarización o comunicados
+        '409':
+          description: Calendario ya publicado sin republicar
+  /api/v1/maestros/anios-escolares/{id}/cerrar:
+    post:
+      summary: Cerrar año escolar
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, minLength: 5 }
+      responses:
+        '201':
+          description: Año cerrado
+  /api/v1/maestros/anios-escolares/{id}/copiar-calendario:
+    post:
+      summary: Copiar calendario del año anterior
+      description: |
+        Copia periodos académicos, feriados y eventos institucionales desde un año origen
+        al año destino (planificado), desplazando fechas y omitiendo duplicados.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+          description: ID del año escolar destino (planificado)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                anioOrigen:
+                  type: integer
+                  minimum: 2000
+                  description: Año origen; por defecto año destino − 1
+                copiarPeriodos: { type: boolean, default: true }
+                copiarFeriados: { type: boolean, default: true }
+                copiarEventos: { type: boolean, default: true }
+                motivo: { type: string, maxLength: 500 }
+                idempotencyKey: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Calendario copiado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  anioDestino: { type: integer }
+                  anioOrigen: { type: integer }
+                  deltaAnios: { type: integer }
+                  periodos:
+                    type: object
+                    properties:
+                      copiados: { type: integer }
+                      omitidos: { type: integer }
+                      fueraDeRango: { type: integer }
+                  feriados:
+                    type: object
+                    properties:
+                      copiados: { type: integer }
+                      omitidos: { type: integer }
+                      fueraDeRango: { type: integer }
+                  eventos:
+                    type: object
+                    properties:
+                      copiados: { type: integer }
+                      omitidos: { type: integer }
+                      fueraDeRango: { type: integer }
+                  version: { type: integer }
+                  mensaje: { type: string }
+                  recuperado: { type: boolean }
+        '403':
+          description: Sin permiso
+        '404':
+          description: Sin calendario origen
+        '409':
+          description: Nada copiable (duplicados o fuera de rango)

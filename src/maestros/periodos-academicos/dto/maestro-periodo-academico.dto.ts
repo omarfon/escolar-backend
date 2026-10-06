@@ -7,7 +7,9 @@ import {
   Matches,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
+import { TIPOS_PERIODO_ANIO_ESCOLAR } from '../../anios-escolares/anio-escolar.constants';
 
 export class CreateMaestroPeriodoAcademicoDto {
   @IsInt()
@@ -88,4 +90,31 @@ export class UpdateMaestroPeriodoAcademicoDto {
   @IsOptional()
   @IsBoolean()
   activo?: boolean;
+}
+
+/** Genera la plantilla MINEDU de periodos para un año escolar ya registrado. */
+export class DividirPeriodosAnioEscolarDto {
+  @IsInt()
+  @Min(2000)
+  anioEscolar: number;
+
+  @IsOptional()
+  @IsIn(TIPOS_PERIODO_ANIO_ESCOLAR)
+  tipo?: (typeof TIPOS_PERIODO_ANIO_ESCOLAR)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  motivo?: string;
+
+  /** Si true, actualiza periodos existentes con la plantilla. */
+  @IsOptional()
+  @IsBoolean()
+  sobreescribir?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  @MaxLength(64)
+  idempotencyKey?: string;
 }

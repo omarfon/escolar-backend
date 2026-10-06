@@ -5,6 +5,9 @@ export class Schedule {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int' })
+  institutionId: number;
+
   @Column()
   studentId: number;
 

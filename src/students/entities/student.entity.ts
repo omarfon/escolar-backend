@@ -112,11 +112,42 @@ export class Student {
   @Column({ length: 15, default: 'activo' })
   estadoMatricula: StudentEstadoMatricula;
 
+  /** IE donde el estudiante tiene la matrícula vigente. */
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
+  /** Identidad del alumno. No cambia si al año siguiente estudia en otra IE. */
+  @Column({ length: 40, default: '' })
+  codigoNacional: string;
+
   @Column({ length: 20, default: 'elegible' })
   estadoCambioSeccion: EstadoCambioSeccion;
 
   @Column({ length: 3, default: 'AD' })
   conductaNota: string;
+
+  /** regular | pendiente_regularizacion (registro excepcional sin documento). */
+  @Column({ length: 30, default: 'regular' })
+  estadoDocumento: string;
+
+  @Column({ type: 'text', default: '' })
+  sinDocumentoMotivo: string;
+
+  @Column({ type: 'text', default: '' })
+  sinDocumentoSustento: string;
+
+  /** Matrícula excepcional por edad fuera de normativa. */
+  @Column({ default: false })
+  matriculaExcepcional: boolean;
+
+  @Column({ type: 'text', default: '' })
+  excepcionalMotivo: string;
+
+  @Column({ type: 'text', default: '' })
+  excepcionalSustento: string;
+
+  @Column({ type: 'smallint', nullable: true })
+  edadNormativaAlRegistro: number | null;
 
   @Column({ type: 'jsonb', default: () => "'{}'" })
   padre: RepresentanteData;

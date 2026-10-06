@@ -10,6 +10,9 @@ export class StudentCharge {
   @Column()
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column()
   conceptId: number;
 

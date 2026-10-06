@@ -319,10 +319,14 @@ export class TreasuryService implements OnModuleInit {
     anioEscolar?: number;
     q?: string;
     estado?: ChargeEstado;
+    institutionId?: number;
   }): Promise<StaffChargeItemDto[]> {
     const anio = filters?.anioEscolar ?? new Date().getFullYear();
     const charges = await this.chargeRepo.find({
-      where: { anioEscolar: anio },
+      where: {
+        anioEscolar: anio,
+        ...(filters?.institutionId === undefined ? {} : { institutionId: filters.institutionId }),
+      },
       order: { fechaVencimiento: 'ASC', id: 'ASC' },
     });
 
@@ -340,6 +344,20 @@ export class TreasuryService implements OnModuleInit {
 
     const studentMap = new Map(students.map((s) => [s.id, s]));
     const conceptMap = new Map(concepts.map((c) => [c.id, c]));
+
+    const chargeIds = charges.map((c) => c.id);
+    const payments = chargeIds.length
+      ? await this.paymentRepo.find({
+          where: { chargeId: In(chargeIds) },
+          order: { fechaPago: 'DESC', id: 'DESC' },
+        })
+      : [];
+    const ultimoPagoByCharge = new Map<number, StudentPayment>();
+    for (const p of payments) {
+      if (!ultimoPagoByCharge.has(p.chargeId)) {
+        ultimoPagoByCharge.set(p.chargeId, p);
+      }
+    }
 
     const q = filters?.q?.trim().toLowerCase() ?? '';
     const estadoFilter = filters?.estado;
@@ -395,16 +413,21 @@ export class TreasuryService implements OnModuleInit {
         fechaVencimiento: charge.fechaVencimiento,
         estado,
         anioEscolar: charge.anioEscolar,
+        ultimoPagoId: ultimoPagoByCharge.get(charge.id)?.id ?? null,
+        numeroBoleta: ultimoPagoByCharge.get(charge.id)?.numeroBoleta ?? '',
       });
     }
 
     return items;
   }
 
-  async getTreasurySummary(anioEscolar?: number): Promise<TreasurySummaryDto> {
+  async getTreasurySummary(anioEscolar?: number, institutionId?: number): Promise<TreasurySummaryDto> {
     const anio = anioEscolar ?? new Date().getFullYear();
     const charges = await this.chargeRepo.find({
-      where: { anioEscolar: anio },
+      where: {
+        anioEscolar: anio,
+        ...(institutionId === undefined ? {} : { institutionId }),
+      },
     });
 
     let recaudado = 0;
@@ -434,13 +457,16 @@ export class TreasuryService implements OnModuleInit {
     const iniMes = `${year}-${String(month + 1).padStart(2, '0')}-01`;
     const ultimoDia = new Date(year, month + 1, 0).getDate();
     const finMes = `${year}-${String(month + 1).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
-    const payments = await this.paymentRepo
+    const paymentsQb = this.paymentRepo
       .createQueryBuilder('p')
       .where('p.fechaPago >= :iniMes AND p.fechaPago <= :finMes', {
         iniMes,
         finMes,
-      })
-      .getMany();
+      });
+    if (institutionId !== undefined) {
+      paymentsQb.andWhere('p.institutionId = :institutionId', { institutionId });
+    }
+    const payments = await paymentsQb.getMany();
     const recaudadoMes = payments.reduce((s, p) => s + Number(p.monto), 0);
 
     return {
@@ -458,9 +484,10 @@ export class TreasuryService implements OnModuleInit {
     chargeId: number,
     dto: RegisterPaymentDto,
     registradoPor: string,
+    institutionId?: number,
   ): Promise<PayVisaResultDto> {
     const charge = await this.chargeRepo.findOneBy({ id: chargeId });
-    if (!charge) {
+    if (!charge || this.fueraDeInstitucion(charge.institutionId, institutionId)) {
       throw new NotFoundException('Cargo no encontrado');
     }
 
@@ -493,9 +520,10 @@ export class TreasuryService implements OnModuleInit {
     chargeId: number,
     dto: PayVisaDto,
     registradoPor: string,
+    institutionId?: number,
   ): Promise<PayVisaResultDto> {
     const charge = await this.chargeRepo.findOneBy({ id: chargeId });
-    if (!charge) {
+    if (!charge || this.fueraDeInstitucion(charge.institutionId, institutionId)) {
       throw new NotFoundException('Cargo no encontrado');
     }
     return this.payChargeWithVisa(
@@ -506,9 +534,9 @@ export class TreasuryService implements OnModuleInit {
     );
   }
 
-  async getPaymentReceiptStaff(paymentId: number): Promise<BoletaVentaDto> {
+  async getPaymentReceiptStaff(paymentId: number, institutionId?: number): Promise<BoletaVentaDto> {
     const payment = await this.paymentRepo.findOneBy({ id: paymentId });
-    if (!payment) {
+    if (!payment || this.fueraDeInstitucion(payment.institutionId, institutionId)) {
       throw new NotFoundException('Pago no encontrado');
     }
 
@@ -539,6 +567,7 @@ export class TreasuryService implements OnModuleInit {
     const payment = await this.paymentRepo.save(
       this.paymentRepo.create({
         chargeId: charge.id,
+        institutionId: charge.institutionId,
         monto,
         fechaPago,
         metodoPago,
@@ -576,11 +605,15 @@ export class TreasuryService implements OnModuleInit {
     nivel?: string;
     activo?: boolean;
     q?: string;
+    institutionId?: number;
   }): Promise<PaymentConceptResponseDto[]> {
     const qb = this.conceptRepo
       .createQueryBuilder('c')
       .orderBy('c.id', 'DESC');
 
+    if (filters?.institutionId !== undefined) {
+      qb.andWhere('c.institutionId = :institutionId', { institutionId: filters.institutionId });
+    }
     if (filters?.tipo) {
       qb.andWhere('c.tipo = :tipo', { tipo: filters.tipo });
     }
@@ -602,9 +635,9 @@ export class TreasuryService implements OnModuleInit {
     return rows.map((row) => this.toConceptResponse(row));
   }
 
-  async findConceptById(id: number): Promise<PaymentConceptResponseDto> {
+  async findConceptById(id: number, institutionId?: number): Promise<PaymentConceptResponseDto> {
     const row = await this.conceptRepo.findOneBy({ id });
-    if (!row) {
+    if (!row || (institutionId !== undefined && row.institutionId !== institutionId)) {
       throw new NotFoundException('Concepto de pago no encontrado');
     }
     return this.toConceptResponse(row);
@@ -612,6 +645,7 @@ export class TreasuryService implements OnModuleInit {
 
   async createConcept(
     dto: CreatePaymentConceptDto,
+    institutionId?: number,
   ): Promise<PaymentConceptResponseDto> {
     const codigo = await this.nextConceptCodigo();
     const saved = await this.conceptRepo.save(
@@ -624,6 +658,7 @@ export class TreasuryService implements OnModuleInit {
         periodicidad: dto.periodicidad,
         nivel: dto.nivel?.trim() || 'Todos',
         activo: dto.activo ?? true,
+        institutionId: institutionId ?? null,
       }),
     );
     return this.toConceptResponse(saved);
@@ -632,9 +667,10 @@ export class TreasuryService implements OnModuleInit {
   async updateConcept(
     id: number,
     dto: UpdatePaymentConceptDto,
+    institutionId?: number,
   ): Promise<PaymentConceptResponseDto> {
     const row = await this.conceptRepo.findOneBy({ id });
-    if (!row) {
+    if (!row || this.fueraDeInstitucion(row.institutionId, institutionId)) {
       throw new NotFoundException('Concepto de pago no encontrado');
     }
 
@@ -653,9 +689,10 @@ export class TreasuryService implements OnModuleInit {
   async setConceptActivo(
     id: number,
     activo: boolean,
+    institutionId?: number,
   ): Promise<PaymentConceptResponseDto> {
     const row = await this.conceptRepo.findOneBy({ id });
-    if (!row) {
+    if (!row || this.fueraDeInstitucion(row.institutionId, institutionId)) {
       throw new NotFoundException('Concepto de pago no encontrado');
     }
     row.activo = activo;
@@ -663,9 +700,9 @@ export class TreasuryService implements OnModuleInit {
     return this.toConceptResponse(saved);
   }
 
-  async removeConcept(id: number): Promise<{ deleted: boolean; id: number }> {
+  async removeConcept(id: number, institutionId?: number): Promise<{ deleted: boolean; id: number }> {
     const row = await this.conceptRepo.findOneBy({ id });
-    if (!row) {
+    if (!row || this.fueraDeInstitucion(row.institutionId, institutionId)) {
       throw new NotFoundException('Concepto de pago no encontrado');
     }
 
@@ -678,6 +715,10 @@ export class TreasuryService implements OnModuleInit {
 
     await this.conceptRepo.remove(row);
     return { deleted: true, id };
+  }
+
+  private fueraDeInstitucion(rowId: number | null | undefined, alcance?: number): boolean {
+    return alcance !== undefined && rowId !== alcance;
   }
 
   private async nextConceptCodigo(): Promise<string> {
@@ -746,6 +787,7 @@ export class TreasuryService implements OnModuleInit {
     const matCharge = await this.chargeRepo.save(
       this.chargeRepo.create({
         studentId: student.id,
+        institutionId: student.institutionId,
         conceptId: matConcept.id,
         anioEscolar: anio,
         periodoLabel: `Matrícula ${anio}`,
@@ -779,6 +821,7 @@ export class TreasuryService implements OnModuleInit {
       const charge = await this.chargeRepo.save(
         this.chargeRepo.create({
           studentId: student.id,
+          institutionId: student.institutionId,
           conceptId: mensConcept.id,
           anioEscolar: anio,
           periodoLabel: label,

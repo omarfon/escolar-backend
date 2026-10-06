@@ -1,34 +1,25 @@
 import {
-
   BadRequestException,
-
   Injectable,
-
   NotFoundException,
-
 } from '@nestjs/common';
-
 import { InjectRepository } from '@nestjs/typeorm';
-
 import { Repository } from 'typeorm';
-
+import { Institution } from '../../institution/entities/institution.entity';
 import { MaestroCurso } from './entities/maestro-curso.entity';
-
 import {
-
   CreateMaestroCursoDto,
-
   UpdateMaestroCursoDto,
-
 } from './dto/maestro-curso.dto';
-
+import { MAESTRO_CURSOS_SEED } from './cursos-seed.data';
 import {
-
-  MAESTRO_CURSOS_SEED,
-
-} from './cursos-seed.data';
-
-
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosInstitutionId,
+  resolveSeedInstitutionId,
+} from '../common/maestros-tenant.util';
 
 export interface SyncMaestroCursosResult {
   created: number;
@@ -50,18 +41,13 @@ export interface MaestroCursosQuery {
   activo?: boolean;
 }
 
-
-
 @Injectable()
-
 export class CursosMaestrosService {
-
   constructor(
-
     @InjectRepository(MaestroCurso)
-
     private readonly cursoRepo: Repository<MaestroCurso>,
-
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
   ) {}
 
   /** Inserta el catálogo demo solo si la tabla está vacía (usado por DatabaseSeedService). */
@@ -71,10 +57,11 @@ export class CursosMaestrosService {
       return { created: 0, updated: 0, total: existing };
     }
 
+    const institutionId = await resolveSeedInstitutionId(this.institutionRepo);
     let created = 0;
     for (const seed of MAESTRO_CURSOS_SEED) {
       await this.cursoRepo.save(
-        this.cursoRepo.create({ ...seed, activo: true }),
+        this.cursoRepo.create({ ...seed, institutionId, activo: true }),
       );
       created++;
     }
@@ -82,19 +69,28 @@ export class CursosMaestrosService {
     return { created, updated: 0, total: MAESTRO_CURSOS_SEED.length };
   }
 
-
-
-  findAll(query?: MaestroCursosQuery): Promise<MaestroCurso[]> {
-    return this.buildQuery(query).getMany();
+  findAll(
+    query?: MaestroCursosQuery,
+    req?: MaestrosAuthRequest,
+  ): Promise<MaestroCurso[]> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    if (req && institutionId == null) return Promise.resolve([]);
+    return this.buildQuery(query, institutionId).getMany();
   }
 
   async findPaginated(
     query: MaestroCursosQuery = {},
     page = 1,
     pageSize = 10,
+    req?: MaestrosAuthRequest,
   ): Promise<MaestroCursosPage> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    if (req && institutionId == null) {
+      return { items: [], total: 0, page: 1, pageSize, totalPages: 1 };
+    }
+
     const safePageSize = Math.min(100, Math.max(1, pageSize));
-    const qb = this.buildQuery(query);
+    const qb = this.buildQuery(query, institutionId);
     const total = await qb.getCount();
     const totalPages = Math.max(1, Math.ceil(total / safePageSize));
     const safePage = Math.min(Math.max(1, page), totalPages);
@@ -112,12 +108,14 @@ export class CursosMaestrosService {
     };
   }
 
-  private buildQuery(query?: MaestroCursosQuery) {
+  private buildQuery(query?: MaestroCursosQuery, institutionId?: number) {
     const qb = this.cursoRepo
       .createQueryBuilder('c')
       .orderBy('c.nivel', 'ASC')
       .addOrderBy('c.area', 'ASC')
       .addOrderBy('c.nombre', 'ASC');
+
+    applyInstitutionIdWhere(qb, 'c', institutionId);
 
     if (query?.nivel) qb.andWhere('c.nivel = :nivel', { nivel: query.nivel });
     if (query?.area) {
@@ -130,104 +128,77 @@ export class CursosMaestrosService {
     return qb;
   }
 
-
-
-  async create(dto: CreateMaestroCursoDto): Promise<MaestroCurso> {
+  async create(
+    dto: CreateMaestroCursoDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroCurso> {
+    const institutionId = requireMaestrosInstitutionId(req);
 
     const dup = await this.cursoRepo.findOne({
-
-      where: { nombre: dto.nombre, nivel: dto.nivel, activo: true },
-
+      where: {
+        institutionId,
+        nombre: dto.nombre,
+        nivel: dto.nivel,
+        activo: true,
+      },
     });
 
     if (dup) {
-
       throw new BadRequestException(
-
         `Ya existe un curso activo "${dto.nombre}" en ${dto.nivel}`,
-
       );
-
     }
 
-
-
     return this.cursoRepo.save(
-
       this.cursoRepo.create({
-
         ...dto,
-
+        institutionId,
         activo: dto.activo ?? true,
-
       }),
-
     );
-
   }
 
-
-
-  async update(id: number, dto: UpdateMaestroCursoDto): Promise<MaestroCurso> {
-
+  async update(
+    id: number,
+    dto: UpdateMaestroCursoDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroCurso> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const curso = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(curso, institutionId);
 
     if (dto.nombre !== undefined || dto.nivel !== undefined) {
-
       const nombre = dto.nombre ?? curso.nombre;
-
       const nivel = dto.nivel ?? curso.nivel;
-
       const dup = await this.cursoRepo.findOne({
-
-        where: { nombre, nivel, activo: true },
-
+        where: { institutionId, nombre, nivel, activo: true },
       });
-
       if (dup && dup.id !== id) {
-
         throw new BadRequestException(
-
           `Ya existe un curso activo "${nombre}" en ${nivel}`,
-
         );
-
       }
-
     }
 
     Object.assign(curso, dto);
-
     return this.cursoRepo.save(curso);
-
   }
 
-
-
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
-
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const curso = await this.getOrFail(id);
-
+    assertMaestroBelongsToInstitution(curso, institutionId);
     curso.activo = false;
-
     await this.cursoRepo.save(curso);
-
     return { deleted: true, id };
-
   }
-
-
 
   private async getOrFail(id: number): Promise<MaestroCurso> {
-
     const curso = await this.cursoRepo.findOneBy({ id });
-
     if (!curso) throw new NotFoundException(`Curso maestro ${id} no encontrado`);
-
     return curso;
-
   }
-
 }
-
-

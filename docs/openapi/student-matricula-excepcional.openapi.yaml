@@ -1,0 +1,57 @@
+openapi: 3.0.3
+info:
+  title: Matrícula excepcional (edad)
+  version: '1.0'
+  description: |
+    Registro de matrícula cuando la edad del estudiante no cumple la normativa al 31/03 del año escolar.
+    Requiere motivo y sustento documentado. Registra auditoría completa.
+paths:
+  /api/v1/students/matricula-excepcional/context:
+    get:
+      summary: Contexto institucional, motivos y grados disponibles
+      tags: [Matrícula excepcional]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Contexto
+        '403':
+          description: Sin permiso
+  /api/v1/students/matricula-excepcional/check-age:
+    post:
+      summary: Verificar edad normativa vs grado
+      tags: [Matrícula excepcional]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Resultado de verificación
+  /api/v1/students/matricula-excepcional/check-duplicates:
+    post:
+      summary: Detectar posibles duplicados antes de registrar
+      tags: [Matrícula excepcional]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Lista de coincidencias
+  /api/v1/students/matricula-excepcional:
+    post:
+      summary: Registrar matrícula excepcional (sin validar edad normativa)
+      tags: [Matrícula excepcional]
+      security: [{ bearerAuth: [] }]
+      description: |
+        Requiere permiso `matricula.excepcional`.
+        Solo procede si la edad NO cumple la normativa para el grado indicado.
+      responses:
+        '201':
+          description: Estudiante matriculado con flag excepcional
+        '400':
+          description: Edad normativa o datos inválidos
+        '409':
+          description: Duplicado o documento existente
+        '403':
+          description: Sin permiso
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

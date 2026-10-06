@@ -17,6 +17,8 @@ export interface StaffChargeItemDto {
   fechaVencimiento: string;
   estado: ChargeEstado;
   anioEscolar: number;
+  ultimoPagoId?: number | null;
+  numeroBoleta?: string;
 }
 
 export interface TreasurySummaryDto {

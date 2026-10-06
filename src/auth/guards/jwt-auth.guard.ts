@@ -13,6 +13,9 @@ import {
 import { Reflector } from '@nestjs/core';
 
 import { RolesService } from '../../roles/roles.service';
+import { UsersService } from '../../users/users.service';
+import { UserRolesService } from '../../users/user-roles.service';
+import { AuthCacheService } from '../auth-cache.service';
 
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
@@ -27,11 +30,11 @@ import { RequestUser } from '../interfaces/request-user.interface';
 export class JwtAuthGuard implements CanActivate {
 
   constructor(
-
     private readonly rolesService: RolesService,
-
     private readonly reflector: Reflector,
-
+    private readonly usersService: UsersService,
+    private readonly userRolesService: UserRolesService,
+    private readonly authCache: AuthCacheService,
   ) {}
 
 
@@ -84,44 +87,38 @@ export class JwtAuthGuard implements CanActivate {
 
 
 
-    const roles = Array.isArray(payload.roles) ? payload.roles : [];
+    const sessionVersion =
+      typeof payload.sv === 'number' ? payload.sv : 0;
+    const userId = +payload.sub;
 
-    const permisos = new Set<string>();
-
-    let esAdmin = false;
-
-
-
-    for (const rol of roles) {
-
-      const list = await this.rolesService.getPermissionsByRoleCodigo(rol);
-
-      list.forEach((p) => permisos.add(p));
-
-      if (await this.rolesService.isAdminRole(rol)) {
-
-        esAdmin = true;
-
+    let effective = this.authCache.get(userId, sessionVersion);
+    if (!effective) {
+      const currentSessionVersion =
+        await this.usersService.getSessionVersion(userId);
+      if (currentSessionVersion !== sessionVersion) {
+        throw new UnauthorizedException(
+          'Sesión invalidada. Inicie sesión nuevamente.',
+        );
       }
-
+      effective = await this.userRolesService.resolveEffectiveAuth(userId);
+      this.authCache.set(userId, sessionVersion, effective);
     }
 
-
+    const principalAssignment =
+      effective.assignments.find((a) => a.esPrincipal) ?? effective.assignments[0];
 
     const user: RequestUser = {
-
       id: payload.sub,
-
       username: payload.username ?? '',
-
       nombre: payload.nombre,
-
-      roles,
-
-      permisos: [...permisos],
-
-      esAdmin,
-
+      roles: effective.roleCodigos,
+      permisos: effective.permisos,
+      esAdmin: effective.esAdmin,
+      ambitos: effective.ambitos,
+      rolPrincipal: effective.primaryRole,
+      institutionId: effective.institutionId,
+      ugelCodigo: principalAssignment?.ugelCodigo ?? null,
+      dreCodigo: principalAssignment?.dreCodigo ?? null,
     };
 
 

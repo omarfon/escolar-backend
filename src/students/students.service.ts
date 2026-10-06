@@ -1,11 +1,14 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
+import { RequestUser } from '../auth/interfaces/request-user.interface';
+import { institutionIdDeAlcance } from '../auth/siagie-access.util';
 import { Attendance } from '../attendances/entities/attendance.entity';
 import { Grade } from '../grades/entities/grade.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
@@ -16,18 +19,20 @@ import {
   HistorialNotaItem,
   HistorialTrayectoriaItem,
 } from './dto/historial-academico.dto';
+import {
+  ExpedientesPageQuery,
+  ExpedientesPageResponse,
+} from './dto/expedientes-page.dto';
 import { ChangeSectionDto } from './dto/change-section.dto';
+import { CreateSectionChangeRequestDto } from './dto/section-change-request.dto';
 import { CreateStudentDto } from './dto/create-student.dto';
 import {
   CreateExpedienteDto,
-  UpdateDocumentoDto,
   UpdateExpedienteDto,
-  UpsertDocumentoDto,
 } from './dto/expediente.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { SectionChange } from './entities/section-change.entity';
 import { StudentAcademicHistory } from './entities/student-academic-history.entity';
-import { StudentDocument } from './entities/student-document.entity';
 import {
   REPRESENTANTE_VACIO,
   EstadoCambioSeccion,
@@ -63,12 +68,6 @@ import { CurriculumSubject } from '../curricula/entities/curriculum-subject.enti
 import { User } from '../users/entities/user.entity';
 import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import {
-  requisitosPorGrado,
-  tiposEquivalentes,
-  combinarRequisitosConDocumentos,
-} from './document-requirements.constants';
-import { StudentDocumentsResponse } from './dto/student-documents.dto';
-import {
   BulkImportMatriculaResult,
   BulkMatriculaPreviewItem,
   BulkMatriculaPreviewResult,
@@ -87,6 +86,31 @@ import {
 } from './bulk-historial.parser';
 import { SalonesService } from '../maestros/salones/salones.service';
 import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
+import { ConductIncidentsService } from '../conduct-incidents/conduct-incidents.service';
+import {
+  buildConductKpis,
+  calcNivelConducta,
+  ConductIncidentResponse,
+} from '../conduct-incidents/conduct-incidents.mapper';
+import { StudentAuditContext } from './dto/student-change-audit.dto';
+import {
+  CheckSinDocumentoDuplicatesDto,
+  CreateSinDocumentoDto,
+  RegularizarDocumentoDto,
+  SinDocumentoContext,
+} from './dto/student-sin-documento.dto';
+import { Institution } from '../institution/entities/institution.entity';
+import { findDuplicateCandidates } from './student-duplicate-match.util';
+import {
+  ESTADO_DOCUMENTO_PENDIENTE,
+  ESTADO_DOCUMENTO_REGULAR,
+  TIPO_DOCUMENTO_SIN,
+} from './student-sin-documento.constants';
+import { StudentChangeAuditService } from './student-change-audit.service';
+import { StudentDocumentsService } from './student-documents.service';
+import { assertAuditMotivoForUpdate } from './students-audit.util';
+import { validarEdadNormativa } from './enrollment-age.util';
+import { codigoNacionalDeAlumno } from './codigo-alumno.util';
 
 @Injectable()
 export class StudentsService implements OnModuleInit {
@@ -97,8 +121,6 @@ export class StudentsService implements OnModuleInit {
     private readonly sectionChangeRepo: Repository<SectionChange>,
     @InjectRepository(Schedule)
     private readonly scheduleRepo: Repository<Schedule>,
-    @InjectRepository(StudentDocument)
-    private readonly documentRepo: Repository<StudentDocument>,
     @InjectRepository(StudentAcademicHistory)
     private readonly historyRepo: Repository<StudentAcademicHistory>,
     @InjectRepository(Attendance)
@@ -115,8 +137,13 @@ export class StudentsService implements OnModuleInit {
     private readonly curriculumSubjectRepo: Repository<CurriculumSubject>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
     private readonly salonesService: SalonesService,
     private readonly periodosService: PeriodosAcademicosMaestrosService,
+    private readonly conductIncidentsService: ConductIncidentsService,
+    private readonly studentChangeAudit: StudentChangeAuditService,
+    private readonly studentDocumentsService: StudentDocumentsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -131,14 +158,23 @@ export class StudentsService implements OnModuleInit {
       apoderado: { ...REPRESENTANTE_VACIO },
     });
     const saved = await this.studentsRepository.save(entity);
+    let dirty = false;
     if (!saved.codigo) {
       saved.codigo = buildCodigo(saved.id);
-      await this.studentsRepository.save(saved);
+      dirty = true;
     }
+    if (!saved.codigoNacional) {
+      saved.codigoNacional = codigoNacionalDeAlumno(saved);
+      dirty = true;
+    }
+    if (dirty) await this.studentsRepository.save(saved);
     return saved;
   }
 
-  async createExpediente(dto: CreateExpedienteDto): Promise<ExpedienteResponse> {
+  async createExpediente(
+    dto: CreateExpedienteDto,
+    auditCtx?: StudentAuditContext,
+  ): Promise<ExpedienteResponse> {
     await this.assertDocumentoMatriculaDisponible(dto.dni, dto.tipoDocumento);
 
     const email = dto.email.trim().toLowerCase();
@@ -151,8 +187,28 @@ export class StudentsService implements OnModuleInit {
     }
 
     const { nivel, grado } = splitGradoLabel(dto.gradoLabel);
+    if (dto.fechaNac?.trim()) {
+      const institution = await this.institutionRepo.findOne({
+        where: {},
+        order: { id: 'ASC' },
+      });
+      const anioEscolar =
+        Number(institution?.anio) || new Date().getFullYear();
+      const edadCheck = validarEdadNormativa({
+        fechaNac: dto.fechaNac,
+        nivel,
+        grado,
+        anioEscolar,
+      });
+      if (!edadCheck.valido) {
+        throw new BadRequestException(
+          `${edadCheck.mensaje ?? 'Edad fuera de normativa.'} Use matrícula excepcional si corresponde.`,
+        );
+      }
+    }
     const estado = dto.estado ?? 'activo';
     const apellidos = resolveApellidos(dto);
+    const institutionId = await this.resolveInstitutionId(auditCtx);
     const entity = this.studentsRepository.create({
       nombre: dto.nombres.trim(),
       apellido: apellidos.apellido,
@@ -180,6 +236,7 @@ export class StudentsService implements OnModuleInit {
       observaciones: dto.observaciones?.trim() ?? '',
       anioIngreso: dto.anioIngreso?.trim() || String(new Date().getFullYear()),
       estadoMatricula: estado,
+      institutionId,
       conductaNota: dto.conductaNota?.trim() || 'AD',
       padre: normalizeRepresentante(dto.padre),
       madre: normalizeRepresentante(dto.madre),
@@ -187,19 +244,203 @@ export class StudentsService implements OnModuleInit {
     });
 
     const saved = await this.studentsRepository.save(entity);
+    let dirty = false;
     if (!saved.codigo) {
       saved.codigo = buildCodigo(saved.id);
-      await this.studentsRepository.save(saved);
+      dirty = true;
     }
+    if (!saved.codigoNacional) {
+      saved.codigoNacional = codigoNacionalDeAlumno(saved);
+      dirty = true;
+    }
+    if (dirty) await this.studentsRepository.save(saved);
 
     if (dto.historialAcademico?.length) {
       await this.replaceHistorial(saved.id, dto.historialAcademico);
     }
     if (dto.documentos?.length) {
-      await this.replaceDocumentos(saved.id, dto.documentos);
+      await this.studentDocumentsService.replaceDocumentos(
+        saved.id,
+        dto.documentos,
+      );
     }
 
+    await this.studentChangeAudit.recordCreate(
+      await this.getOrFail(saved.id),
+      auditCtx,
+    );
+
     return this.findExpediente(saved.id);
+  }
+
+  async getSinDocumentoContext(): Promise<SinDocumentoContext> {
+    let institution = await this.institutionRepo.findOne({
+      where: {},
+      order: { id: 'ASC' },
+    });
+    if (!institution) {
+      institution = await this.institutionRepo.save(this.institutionRepo.create({}));
+    }
+    return {
+      institucion: {
+        nombre: institution.nombre,
+        siglas: institution.siglas,
+        anioEscolar: Number(institution.anio) || new Date().getFullYear(),
+        ugel: institution.ugel,
+        dre: institution.dre,
+      },
+      permisoRegistro: 'estudiantes.crear',
+      permisoRegularizacion: 'estudiantes.editar',
+      tipoDocumentoSin: TIPO_DOCUMENTO_SIN,
+      estadoPendiente: ESTADO_DOCUMENTO_PENDIENTE,
+    };
+  }
+
+  async findSinDocumentoDuplicates(dto: CheckSinDocumentoDuplicatesDto) {
+    const students = await this.studentsRepository.find();
+    return findDuplicateCandidates(students, {
+      nombres: dto.nombres,
+      apellidos: dto.apellidos,
+      fechaNac: dto.fechaNac,
+      sexo: dto.sexo,
+      padreDni: dto.padreDni,
+      madreDni: dto.madreDni,
+      apoderadoDni: dto.apoderadoDni,
+    });
+  }
+
+  async createExpedienteSinDocumento(
+    dto: CreateSinDocumentoDto,
+    auditCtx?: StudentAuditContext,
+  ): Promise<ExpedienteResponse> {
+    const coincidencias = await this.findSinDocumentoDuplicates({
+      nombres: dto.nombres,
+      apellidos: dto.apellidos,
+      fechaNac: dto.fechaNac,
+      sexo: dto.sexo,
+      padreDni: dto.padre?.dni,
+      madreDni: dto.madre?.dni,
+      apoderadoDni: dto.apoderado?.dni,
+    });
+
+    if (coincidencias.length && !dto.confirmarDuplicado) {
+      throw new ConflictException({
+        message:
+          'Se encontraron posibles coincidencias con estudiantes existentes. Revise antes de continuar.',
+        coincidencias,
+      });
+    }
+
+    const emailInput = dto.email?.trim().toLowerCase();
+    if (emailInput) {
+      const existingEmail = await this.studentsRepository.findOneBy({
+        email: emailInput,
+      });
+      if (existingEmail) {
+        throw new BadRequestException('Ya existe un estudiante con ese correo electrónico');
+      }
+    }
+
+    const { nivel, grado } = splitGradoLabel(dto.gradoLabel);
+    const apellidos = resolveApellidos(dto);
+    const entity = this.studentsRepository.create({
+      nombre: dto.nombres.trim(),
+      apellido: apellidos.apellido,
+      apellidoPaterno: apellidos.apellidoPaterno,
+      apellidoMaterno: apellidos.apellidoMaterno,
+      email: emailInput || `pendiente.${Date.now()}@estudiante.pe`,
+      nivel,
+      grado,
+      seccion: dto.seccion.trim().toUpperCase(),
+      activo: true,
+      codigo: '',
+      dni: '',
+      tipoDocumento: TIPO_DOCUMENTO_SIN,
+      estadoDocumento: ESTADO_DOCUMENTO_PENDIENTE,
+      sinDocumentoMotivo: dto.sinDocumentoMotivo.trim(),
+      sinDocumentoSustento: dto.sinDocumentoSustento.trim(),
+      fechaNac: parseFechaNacInput(dto.fechaNac),
+      sexo: dto.sexo ?? 'M',
+      direccion: dto.direccion?.trim() ?? '',
+      distrito: dto.distrito?.trim() ?? '',
+      provincia: dto.provincia?.trim() ?? '',
+      departamento: dto.departamento?.trim() ?? '',
+      telefonoEmergencia: dto.telefonoEmergencia?.trim() ?? '',
+      foto: '',
+      grupoSanguineo: 'O+',
+      alergias: '',
+      condicionesSalud: '',
+      observaciones: '',
+      anioIngreso: String(new Date().getFullYear()),
+      estadoMatricula: 'activo',
+      conductaNota: 'AD',
+      padre: normalizeRepresentante(dto.padre),
+      madre: normalizeRepresentante(dto.madre),
+      apoderado: normalizeRepresentante(dto.apoderado),
+    });
+
+    const saved = await this.studentsRepository.save(entity);
+    saved.codigo = buildCodigo(saved.id, saved.codigo);
+    if (saved.email.startsWith('pendiente.')) {
+      saved.email = `alumno.${saved.codigo.toLowerCase()}@estudiante.pe`;
+    }
+    await this.studentsRepository.save(saved);
+
+    await this.studentChangeAudit.recordCreate(saved, {
+      ...auditCtx,
+      motivo: dto.sinDocumentoMotivo.trim(),
+    });
+
+    return this.findExpediente(saved.id);
+  }
+
+  async regularizarDocumento(
+    id: number,
+    dto: RegularizarDocumentoDto,
+    auditCtx?: StudentAuditContext,
+  ): Promise<ExpedienteResponse> {
+    assertAuditMotivoForUpdate(auditCtx, dto.auditMotivo);
+
+    const current = await this.getOrFail(id, this.usuarioDe(auditCtx));
+    if (current.estadoDocumento !== ESTADO_DOCUMENTO_PENDIENTE) {
+      throw new BadRequestException(
+        'Este estudiante no está pendiente de regularización documentaria.',
+      );
+    }
+
+    const docNum = dto.dni.trim();
+    if (!docNum) {
+      throw new BadRequestException('Debe indicar el número de documento.');
+    }
+
+    await this.assertDocumentoMatriculaDisponible(docNum, dto.tipoDocumento);
+
+    const before = this.cloneStudent(current);
+    current.dni = docNum;
+    current.tipoDocumento = dto.tipoDocumento?.trim() || 'DNI';
+    current.estadoDocumento = ESTADO_DOCUMENTO_REGULAR;
+    current.sinDocumentoMotivo = '';
+    current.sinDocumentoSustento = '';
+
+    if (current.email.match(/^alumno\.[a-z0-9-]+@estudiante\.pe$/i)) {
+      current.email = `alumno.${docNum}@estudiante.pe`;
+      const emailTaken = await this.studentsRepository.findOneBy({
+        email: current.email,
+      });
+      if (emailTaken && emailTaken.id !== current.id) {
+        throw new BadRequestException(
+          'El correo institucional derivado del documento ya está en uso.',
+        );
+      }
+    }
+
+    await this.studentsRepository.save(current);
+    await this.studentChangeAudit.recordUpdate(current, before, {
+      ...auditCtx,
+      motivo: dto.auditMotivo.trim(),
+    });
+
+    return this.findExpediente(id);
   }
 
   async bulkCreateMatriculas(
@@ -419,6 +660,7 @@ export class StudentsService implements OnModuleInit {
         }
 
         const anio = row.anio.trim();
+        const afiliacion = await this.afiliacionDelAnio(student);
         const payload = {
           studentId: student.id,
           anio,
@@ -426,6 +668,8 @@ export class StudentsService implements OnModuleInit {
           seccion: row.seccion.trim().toUpperCase(),
           promedio: row.promedio,
           estado: row.estado?.trim() || 'Promovido',
+          institutionId: afiliacion.institutionId,
+          codigoInstitucion: afiliacion.codigoInstitucion,
         };
 
         const existing = await this.historyRepo.findOne({
@@ -444,6 +688,8 @@ export class StudentsService implements OnModuleInit {
           existing.seccion = payload.seccion;
           existing.promedio = payload.promedio;
           existing.estado = payload.estado;
+          existing.institutionId = existing.institutionId ?? payload.institutionId;
+          existing.codigoInstitucion = existing.codigoInstitucion || payload.codigoInstitucion;
           await this.historyRepo.save(existing);
           actualizados++;
           importados.push(
@@ -899,34 +1145,133 @@ export class StudentsService implements OnModuleInit {
     return 'No se pudo registrar la matricula';
   }
 
-  async findAllExpedientes(search?: string): Promise<ExpedienteResponse[]> {
-    const students = await this.studentsRepository.find({
-      order: { apellido: 'ASC', nombre: 'ASC' },
+  async findAllExpedientes(search?: string, institutionId?: number): Promise<ExpedienteResponse[]> {
+    const page = await this.findExpedientesPage({
+      q: search,
+      page: 1,
+      pageSize: 10_000,
+      institutionId,
     });
-    const query = search?.trim().toLowerCase();
-    const tokens = query ? query.split(/\s+/).filter(Boolean) : [];
-    const filtered = tokens.length
-      ? students.filter((s) => {
-          const gradoLabel = gradoLabelFromParts(s.nivel, s.grado);
-          const haystack = [
-            s.nombre,
-            s.apellido,
-            s.dni,
-            s.codigo,
-            s.email,
-            gradoLabel,
-            `${s.apellido} ${s.nombre}`,
-            `${s.nombre} ${s.apellido}`,
-          ]
-            .join(' ')
-            .toLowerCase();
-          return tokens.every((t) => haystack.includes(t));
-        })
-      : students;
-    return Promise.all(filtered.map((s) => this.buildExpediente(s)));
+    return page.items;
   }
 
-  async getStudentsStats(): Promise<StudentsStatsDto> {
+  async findMatriculaNacional(q: string) {
+    const term = q.trim();
+    if (term.length < 2) return [];
+    const students = await this.studentsRepository
+      .createQueryBuilder('s')
+      .where(
+        `(s.dni ILIKE :q OR s.codigo ILIKE :q OR s.apellido ILIKE :q OR s.nombre ILIKE :q)`,
+        { q: `%${term}%` },
+      )
+      .orderBy('s.apellido', 'ASC')
+      .addOrderBy('s.nombre', 'ASC')
+      .take(20)
+      .getMany();
+    const ids = [
+      ...new Set(
+        students
+          .map((s) => s.institutionId)
+          .filter((id): id is number => typeof id === 'number'),
+      ),
+    ];
+    const institutions = ids.length
+      ? await this.institutionRepo.findBy({ id: In(ids) })
+      : [];
+    const porId = new Map(institutions.map((i) => [i.id, i]));
+    return students.map((s) => {
+      const ie = s.institutionId ? porId.get(s.institutionId) : undefined;
+      return {
+        id: s.id,
+        codigo: s.codigo,
+        nombres: s.nombre,
+        apellidos: s.apellido,
+        dni: s.dni,
+        nivel: s.nivel,
+        grado: s.grado,
+        seccion: s.seccion,
+        estadoMatricula: s.estadoMatricula,
+        anioIngreso: s.anioIngreso,
+        institucion: ie
+          ? {
+              id: ie.id,
+              nombre: ie.nombre,
+              codigoModular: ie.codigoModular,
+              ugel: ie.ugel,
+              dre: ie.dre,
+            }
+          : null,
+      };
+    });
+  }
+
+  async findExpedientesPage(
+    query: ExpedientesPageQuery = {},
+  ): Promise<ExpedientesPageResponse> {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 20));
+    const qb = this.studentsRepository
+      .createQueryBuilder('s')
+      .orderBy('s.apellido', 'ASC')
+      .addOrderBy('s.nombre', 'ASC');
+
+    if (query.q?.trim()) {
+      const tokens = query.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      tokens.forEach((token, index) => {
+        const param = `q${index}`;
+        qb.andWhere(
+          `(LOWER(s.nombre) LIKE :${param} OR LOWER(s.apellido) LIKE :${param} OR LOWER(s.dni) LIKE :${param} OR LOWER(s.codigo) LIKE :${param} OR LOWER(s.email) LIKE :${param})`,
+          { [param]: `%${token}%` },
+        );
+      });
+    }
+
+    if (query.estado?.trim()) {
+      qb.andWhere('s.estadoMatricula = :estado', { estado: query.estado.trim() });
+    }
+
+    if (query.estadoDocumento?.trim() === 'pendiente_regularizacion') {
+      qb.andWhere("s.estadoDocumento = 'pendiente_regularizacion'");
+    } else if (query.estadoDocumento?.trim() === 'regular') {
+      qb.andWhere(
+        "(s.estadoDocumento IS NULL OR s.estadoDocumento <> 'pendiente_regularizacion')",
+      );
+    }
+
+    if (query.institutionId != null && query.institutionId > 0) {
+      qb.andWhere('s.institutionId = :institutionId', {
+        institutionId: query.institutionId,
+      });
+    }
+
+    if (query.grado?.trim()) {
+      const parsed = splitGradoLabel(query.grado.trim());
+      if (parsed) {
+        qb.andWhere('s.nivel = :nivel', { nivel: parsed.nivel });
+        qb.andWhere('s.grado = :grado', { grado: parsed.grado });
+      }
+    }
+
+    const total = await qb.getCount();
+    const students = await qb
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getMany();
+
+    const items = students.map((student) =>
+      toExpedienteResponse(student, {
+        historial: [],
+        documentos: [],
+        asistenciaPct: 0,
+      }),
+    );
+
+    return { items, total, page, pageSize };
+  }
+
+  async getStudentsStats(institutionId?: number): Promise<StudentsStatsDto> {
+    const alcance =
+      institutionId != null && institutionId > 0 ? { institutionId } : {};
     const [
       total,
       activos,
@@ -936,15 +1281,15 @@ export class StudentsService implements OnModuleInit {
       mujeres,
       varones,
     ] = await Promise.all([
-      this.studentsRepository.count(),
-      this.studentsRepository.count({ where: { estadoMatricula: 'activo' } }),
-      this.studentsRepository.count({ where: { estadoMatricula: 'inactivo' } }),
-      this.studentsRepository.count({ where: { estadoMatricula: 'retirado' } }),
+      this.studentsRepository.count({ where: alcance }),
+      this.studentsRepository.count({ where: { ...alcance, estadoMatricula: 'activo' } }),
+      this.studentsRepository.count({ where: { ...alcance, estadoMatricula: 'inactivo' } }),
+      this.studentsRepository.count({ where: { ...alcance, estadoMatricula: 'retirado' } }),
       this.studentsRepository.count({
-        where: { activo: true, estadoMatricula: 'activo' },
+        where: { ...alcance, activo: true, estadoMatricula: 'activo' },
       }),
-      this.studentsRepository.count({ where: { sexo: 'F' } }),
-      this.studentsRepository.count({ where: { sexo: 'M' } }),
+      this.studentsRepository.count({ where: { ...alcance, sexo: 'F' } }),
+      this.studentsRepository.count({ where: { ...alcance, sexo: 'M' } }),
     ]);
 
     return {
@@ -962,8 +1307,10 @@ export class StudentsService implements OnModuleInit {
     q?: string;
     grado?: string;
     estado?: string;
+    estadoDocumento?: string;
+    institutionId?: number;
   }): Promise<string> {
-    let items = await this.findAllExpedientes(filters?.q);
+    let items = await this.findAllExpedientes(filters?.q, filters?.institutionId);
     if (filters?.grado?.trim()) {
       const grado = filters.grado.trim();
       items = items.filter(
@@ -972,6 +1319,16 @@ export class StudentsService implements OnModuleInit {
     }
     if (filters?.estado?.trim()) {
       items = items.filter((i) => i.estado === filters.estado!.trim());
+    }
+    const docFilter = filters?.estadoDocumento?.trim();
+    if (docFilter === 'pendiente_regularizacion') {
+      items = items.filter(
+        (i) => i.estadoDocumento === 'pendiente_regularizacion',
+      );
+    } else if (docFilter === 'regular') {
+      items = items.filter(
+        (i) => i.estadoDocumento !== 'pendiente_regularizacion',
+      );
     }
     return this.buildExpedientesCsv(items);
   }
@@ -1034,38 +1391,37 @@ export class StudentsService implements OnModuleInit {
     return [header.map(esc).join(sep), ...rows].join('\n');
   }
 
-  getRequisitosDocumentos(gradoLabel: string) {
-    return requisitosPorGrado(gradoLabel);
-  }
-
-  async syncRequisitosMatricula(studentId: number): Promise<ExpedienteResponse> {
-    const student = await this.getOrFail(studentId);
-    const gradoLabel = gradoLabelFromParts(student.nivel, student.grado);
-    const requisitos = requisitosPorGrado(gradoLabel);
-    const existing = await this.documentRepo.find({ where: { studentId } });
-
-    for (const req of requisitos) {
-      const yaExiste = existing.some((doc) =>
-        tiposEquivalentes(doc.tipo, req.tipo),
-      );
-      if (!yaExiste) {
-        await this.documentRepo.save(
-          this.documentRepo.create({
-            studentId,
-            tipo: req.tipo,
-            estado: 'pendiente',
-          }),
-        );
-      }
-    }
-
-    return this.findExpediente(studentId);
-  }
-
-  findAll() {
+  findAll(institutionId?: number) {
     return this.studentsRepository.find({
+      where: institutionId === undefined ? {} : { institutionId },
       order: { apellido: 'ASC', nombre: 'ASC' },
     });
+  }
+
+  async findBySection(
+    nivel: string,
+    grado: string,
+    seccion: string,
+    institutionId?: number,
+  ): Promise<Student[]> {
+    const gradoNorm = normalizeGradoMatricula(grado);
+    const seccionNorm = seccion.trim().toUpperCase();
+    const rowsQb = this.studentsRepository
+      .createQueryBuilder('s')
+      .where('s.activo = :activo', { activo: true })
+      .andWhere('s.estadoMatricula = :estado', { estado: 'activo' })
+      .andWhere('s.nivel = :nivel', { nivel: nivel.trim() })
+      .andWhere('UPPER(s.seccion) = :seccion', { seccion: seccionNorm });
+    if (institutionId !== undefined) {
+      rowsQb.andWhere('s.institutionId = :institutionId', { institutionId });
+    }
+    const rows = await rowsQb
+      .orderBy('s.apellido', 'ASC')
+      .addOrderBy('s.nombre', 'ASC')
+      .getMany();
+    return rows.filter(
+      (s) => normalizeGradoMatricula(s.grado) === gradoNorm,
+    );
   }
 
   findOne(id: number) {
@@ -1230,6 +1586,48 @@ export class StudentsService implements OnModuleInit {
       .getMany();
   }
 
+  async findMeConductByLogin(login: string) {
+    const me = await this.findMeByLogin(login);
+    const student = await this.findOne(me.id);
+    const incidents = await this.conductIncidentsService.findAll({
+      studentId: me.id,
+    });
+    const kpis = buildConductKpis(incidents);
+    const nivel = calcNivelConducta(incidents);
+
+    return {
+      conductaNota: student.conductaNota ?? 'AD',
+      resumen: {
+        leves: kpis.leves,
+        graves: kpis.graves,
+        muyGraves: kpis.muyGraves,
+        reconocimientos: kpis.reconocimientos,
+        totalDemeritos: kpis.leves + kpis.graves + kpis.muyGraves,
+        nivel,
+      },
+      meritos: incidents
+        .filter((i) => i.tipo === 'reconocimiento')
+        .map((i) => this.toStudentConductItem(i)),
+      demeritos: incidents
+        .filter((i) => i.tipo !== 'reconocimiento')
+        .map((i) => this.toStudentConductItem(i)),
+    };
+  }
+
+  private toStudentConductItem(item: ConductIncidentResponse) {
+    return {
+      id: item.id,
+      tipo: item.tipo,
+      descripcion: item.descripcion,
+      fecha: item.fecha,
+      lugar: item.lugar,
+      reportadoPor: item.reportadoPor,
+      estado: item.estado,
+      medida: item.medida,
+      observaciones: item.observaciones,
+    };
+  }
+
   async findGradesByLogin(
     login: string,
     anioEscolar?: number,
@@ -1333,22 +1731,33 @@ export class StudentsService implements OnModuleInit {
     };
   }
 
-  async findExpediente(id: number): Promise<ExpedienteResponse> {
-    const student = await this.getOrFail(id);
+  async findExpediente(id: number, user?: RequestUser): Promise<ExpedienteResponse> {
+    const student = await this.getOrFail(id, user);
     return this.buildExpediente(student);
   }
 
-  async update(id: number, updateStudentDto: UpdateStudentDto) {
-    const current = await this.getOrFail(id);
+  async update(
+    id: number,
+    updateStudentDto: UpdateStudentDto,
+    auditCtx?: StudentAuditContext,
+  ) {
+    assertAuditMotivoForUpdate(auditCtx);
+    const current = await this.getOrFail(id, this.usuarioDe(auditCtx));
+    const before = this.cloneStudent(current);
     const merged = this.studentsRepository.merge(current, updateStudentDto);
-    return this.studentsRepository.save(merged);
+    const saved = await this.studentsRepository.save(merged);
+    await this.studentChangeAudit.recordUpdate(saved, before, auditCtx);
+    return saved;
   }
 
   async updateExpediente(
     id: number,
     dto: UpdateExpedienteDto,
+    auditCtx?: StudentAuditContext,
   ): Promise<ExpedienteResponse> {
-    const current = await this.getOrFail(id);
+    assertAuditMotivoForUpdate(auditCtx, dto.auditMotivo);
+    const current = await this.getOrFail(id, this.usuarioDe(auditCtx));
+    const before = this.cloneStudent(current);
 
     if (dto.nombres !== undefined) current.nombre = dto.nombres.trim();
     if (
@@ -1429,96 +1838,39 @@ export class StudentsService implements OnModuleInit {
       await this.replaceHistorial(id, dto.historialAcademico);
     }
     if (dto.documentos !== undefined) {
-      await this.replaceDocumentos(id, dto.documentos);
+      await this.studentDocumentsService.replaceDocumentos(
+        id,
+        dto.documentos,
+      );
     }
+
+    await this.studentChangeAudit.recordUpdate(
+      current,
+      before,
+      {
+        ...auditCtx,
+        motivo: dto.auditMotivo?.trim() || auditCtx?.motivo,
+      },
+    );
 
     return this.findExpediente(id);
   }
 
-  async remove(id: number) {
-    const current = await this.getOrFail(id);
-    await this.documentRepo.delete({ studentId: id });
+  async remove(id: number, auditCtx?: StudentAuditContext) {
+    const current = await this.getOrFail(id, this.usuarioDe(auditCtx));
+    await this.studentChangeAudit.recordDelete(current, auditCtx);
+    await this.studentDocumentsService.deleteAllForStudent(id);
     await this.historyRepo.delete({ studentId: id });
     await this.studentsRepository.remove(current);
     return { deleted: true, id };
   }
 
-  async addDocument(studentId: number, dto: UpsertDocumentoDto) {
-    await this.getOrFail(studentId);
-    const saved = await this.documentRepo.save(
-      this.documentRepo.create({
-        studentId,
-        tipo: dto.tipo.trim(),
-        numero: dto.numero?.trim() ?? '',
-        estado: dto.estado ?? 'pendiente',
-        fechaEntrega: dto.fechaEntrega?.trim() ?? '',
-        imagenUrl: dto.imagenUrl?.trim() ?? '',
-      }),
-    );
-    return this.toDocumentResponse(saved);
-  }
-
-  async updateDocument(
+  findStudentChangeAudit(
     studentId: number,
-    docId: number,
-    dto: UpdateDocumentoDto,
+    page?: number,
+    pageSize?: number,
   ) {
-    await this.getOrFail(studentId);
-    const doc = await this.documentRepo.findOneBy({ id: docId, studentId });
-    if (!doc) {
-      throw new NotFoundException(`Documento ${docId} no encontrado`);
-    }
-
-    if (dto.tipo !== undefined) doc.tipo = dto.tipo.trim();
-    if (dto.numero !== undefined) doc.numero = dto.numero.trim();
-    if (dto.estado !== undefined) doc.estado = dto.estado;
-    if (dto.fechaEntrega !== undefined) {
-      doc.fechaEntrega = dto.fechaEntrega.trim();
-    }
-    if (dto.imagenUrl !== undefined) doc.imagenUrl = dto.imagenUrl.trim();
-
-    const saved = await this.documentRepo.save(doc);
-    return this.toDocumentResponse(saved);
-  }
-
-  async removeDocument(studentId: number, docId: number) {
-    await this.getOrFail(studentId);
-    const doc = await this.documentRepo.findOneBy({ id: docId, studentId });
-    if (!doc) {
-      throw new NotFoundException(`Documento ${docId} no encontrado`);
-    }
-    await this.documentRepo.remove(doc);
-    return { deleted: true, id: docId };
-  }
-
-  async findStudentDocumentsMatricula(
-    studentId: number,
-  ): Promise<StudentDocumentsResponse> {
-    const student = await this.getOrFail(studentId);
-    const gradoLabel = gradoLabelFromParts(student.nivel, student.grado);
-    const stored = await this.documentRepo.find({
-      where: { studentId },
-      order: { id: 'ASC' },
-    });
-    const documentos = combinarRequisitosConDocumentos(
-      gradoLabel,
-      stored.map((d) => this.toDocumentResponse(d)),
-    );
-    return {
-      studentId: student.id,
-      codigo: buildCodigo(student.id, student.codigo),
-      nombres: student.nombre,
-      apellidos: student.apellido,
-      gradoLabel,
-      seccion: student.seccion,
-      anioIngreso: student.anioIngreso ?? String(new Date().getFullYear()),
-      documentos,
-      entregados: documentos.filter((d) => d.estado === 'entregado').length,
-      total: documentos.length,
-      obligatoriosPendientes: documentos.filter(
-        (d) => d.obligatorio && d.estado !== 'entregado',
-      ).length,
-    };
+    return this.studentChangeAudit.findByStudent(studentId, page, pageSize);
   }
 
   async getSectionOccupancy(nivel: string, grado: string, anioEscolar?: number) {
@@ -1528,12 +1880,14 @@ export class StudentsService implements OnModuleInit {
   async findSectionChangeCandidates(
     nivel?: string,
     grado?: string,
+    institutionId?: number,
   ): Promise<SectionChangeCandidateResponse[]> {
     const students = await this.studentsRepository.find({
       where: {
         activo: true,
         estadoMatricula: 'activo',
         estadoCambioSeccion: 'elegible',
+        ...(institutionId === undefined ? {} : { institutionId }),
       },
       order: { apellido: 'ASC', nombre: 'ASC', id: 'ASC' },
     });
@@ -1562,6 +1916,7 @@ export class StudentsService implements OnModuleInit {
   async findSectionChanges(nivel?: string, grado?: string) {
     const qb = this.sectionChangeRepo
       .createQueryBuilder('change')
+      .where('change.estado = :estado', { estado: 'completado' })
       .orderBy('change.createdAt', 'DESC');
 
     if (nivel) qb.andWhere('change.nivel = :nivel', { nivel });
@@ -1606,8 +1961,12 @@ export class StudentsService implements OnModuleInit {
     });
   }
 
-  async changeSection(id: number, dto: ChangeSectionDto) {
-    const student = await this.getOrFail(id);
+  async changeSection(
+    id: number,
+    dto: ChangeSectionDto,
+    auditCtx?: StudentAuditContext,
+  ) {
+    const student = await this.getOrFail(id, this.usuarioDe(auditCtx));
     if (!student.activo) {
       throw new BadRequestException(
         'Solo se puede cambiar seccion a estudiantes con matricula activa',
@@ -1713,6 +2072,13 @@ export class StudentsService implements OnModuleInit {
       }),
     );
 
+    await this.studentChangeAudit.recordSectionChange(
+      student,
+      seccionAnterior,
+      nuevaSeccion,
+      { ...auditCtx, motivo: motivo || auditCtx?.motivo },
+    );
+
     const occupancy = await this.salonesService.getSectionOccupancy(
       student.nivel,
       student.grado,
@@ -1735,16 +2101,189 @@ export class StudentsService implements OnModuleInit {
     };
   }
 
+  async findSectionChangeRequests(nivel?: string, grado?: string) {
+    const qb = this.sectionChangeRepo
+      .createQueryBuilder('change')
+      .where('change.estado = :estado', { estado: 'pendiente' })
+      .orderBy('change.createdAt', 'ASC');
+
+    if (nivel) qb.andWhere('change.nivel = :nivel', { nivel });
+    if (grado) {
+      qb.andWhere('change.grado = :grado', {
+        grado: normalizeGradoMatricula(grado),
+      });
+    }
+
+    const rows = await qb.getMany();
+    const studentIds = [...new Set(rows.map((row) => row.studentId))];
+    const students = studentIds.length
+      ? await this.studentsRepository.findBy({ id: In(studentIds) })
+      : [];
+    const docPorAlumno = new Map(
+      students.map((s) => [
+        s.id,
+        { dni: s.dni?.trim() ?? '', tipoDocumento: s.tipoDocumento?.trim() || 'DNI' },
+      ]),
+    );
+
+    return rows.map((row) => {
+      const doc = docPorAlumno.get(row.studentId);
+      return {
+        id: row.id,
+        studentId: row.studentId,
+        estudiante: row.estudiante,
+        dni: doc?.dni ?? '',
+        tipoDocumento: doc?.tipoDocumento ?? 'DNI',
+        nivel: row.nivel,
+        grado: row.grado,
+        seccionActual: row.seccionAnterior,
+        seccionDeseada: row.seccionNueva || null,
+        motivo: row.motivo,
+        observacion: row.observacion,
+        autorizadoPor: row.autorizadoPor,
+        solicitadoPor: row.realizadoPor,
+        anioEscolar: row.anioEscolar ?? row.createdAt.getFullYear(),
+        estado: row.estado,
+        createdAt: row.createdAt.toISOString(),
+      };
+    });
+  }
+
+  async createSectionChangeRequest(dto: CreateSectionChangeRequestDto) {
+    const student = await this.getOrFail(dto.studentId);
+    if (!student.activo || student.estadoMatricula !== 'activo') {
+      throw new BadRequestException(
+        'Solo se pueden registrar solicitudes para alumnos con matricula activa',
+      );
+    }
+
+    const canonical = await this.getCanonicalSectionChangeStudent(student);
+    if (canonical.id !== student.id) {
+      throw new BadRequestException(
+        `Registro duplicado. Utilice el expediente ${buildCodigo(canonical.id, canonical.codigo)}.`,
+      );
+    }
+
+    if (student.estadoCambioSeccion === 'cambio_realizado') {
+      throw new BadRequestException(
+        'Este alumno ya tiene un cambio de seccion registrado en el periodo actual',
+      );
+    }
+
+    const anio = new Date().getFullYear();
+    const pending = await this.sectionChangeRepo.findOne({
+      where: { studentId: student.id, estado: 'pendiente' },
+    });
+    if (
+      pending &&
+      (pending.anioEscolar ?? pending.createdAt.getFullYear()) === anio
+    ) {
+      throw new BadRequestException(
+        'El alumno ya tiene una solicitud pendiente de cambio de seccion',
+      );
+    }
+
+    const motivo = dto.motivo.trim();
+    const autorizadoPor = dto.autorizadoPor.trim();
+    const observacion = dto.observacion?.trim() ?? '';
+    const seccionDeseada = dto.seccionDeseada?.trim().toUpperCase() ?? '';
+
+    if (motivo === 'otro' && !observacion) {
+      throw new BadRequestException(
+        'Debe indicar una observacion cuando el motivo es "otro"',
+      );
+    }
+
+    if (seccionDeseada && student.seccion.toUpperCase() === seccionDeseada) {
+      throw new BadRequestException(
+        'La seccion deseada debe ser diferente a la actual',
+      );
+    }
+
+    const solicitadoPor = dto.solicitadoPor?.trim() || 'Sistema';
+    const saved = await this.sectionChangeRepo.save(
+      this.sectionChangeRepo.create({
+        studentId: student.id,
+        estudiante: `${student.apellido}, ${student.nombre}`,
+        nivel: student.nivel,
+        grado: student.grado,
+        seccionAnterior: student.seccion.toUpperCase(),
+        seccionNueva: seccionDeseada,
+        motivo,
+        observacion,
+        autorizadoPor,
+        realizadoPor: solicitadoPor,
+        anioEscolar: anio,
+        estado: 'pendiente',
+      }),
+    );
+
+    return {
+      id: saved.id,
+      studentId: saved.studentId,
+      estudiante: saved.estudiante,
+      dni: student.dni?.trim() ?? '',
+      tipoDocumento: student.tipoDocumento?.trim() || 'DNI',
+      nivel: saved.nivel,
+      grado: gradoLabelFromParts(saved.nivel, saved.grado),
+      seccionActual: saved.seccionAnterior,
+      seccionDeseada: saved.seccionNueva || null,
+      motivo: saved.motivo,
+      observacion: saved.observacion,
+      autorizadoPor: saved.autorizadoPor,
+      solicitadoPor: saved.realizadoPor,
+      anioEscolar: saved.anioEscolar ?? anio,
+      estado: saved.estado,
+      createdAt: saved.createdAt.toISOString(),
+    };
+  }
+
+  async cancelSectionChangeRequest(id: number) {
+    const row = await this.sectionChangeRepo.findOneBy({ id, estado: 'pendiente' });
+    if (!row) {
+      throw new NotFoundException('Solicitud pendiente no encontrada');
+    }
+    row.estado = 'cancelado';
+    await this.sectionChangeRepo.save(row);
+    return { id: row.id, estado: row.estado };
+  }
+
+  async processSectionChangeRequest(id: number, nuevaSeccion?: string) {
+    const request = await this.sectionChangeRepo.findOneBy({
+      id,
+      estado: 'pendiente',
+    });
+    if (!request) {
+      throw new NotFoundException('Solicitud pendiente no encontrada');
+    }
+
+    const destino = (nuevaSeccion ?? request.seccionNueva)?.trim().toUpperCase();
+    if (!destino) {
+      throw new BadRequestException(
+        'Indique la seccion destino para procesar la solicitud',
+      );
+    }
+
+    const result = await this.changeSection(request.studentId, {
+      nuevaSeccion: destino,
+      motivo: request.motivo,
+      autorizadoPor: request.autorizadoPor,
+      observacion: request.observacion,
+      realizadoPor: request.realizadoPor,
+    });
+
+    await this.sectionChangeRepo.remove(request);
+
+    return result;
+  }
+
   private async buildExpediente(student: Student): Promise<ExpedienteResponse> {
     const [historial, documentos, asistenciaPct] = await Promise.all([
       this.historyRepo.find({
         where: { studentId: student.id },
         order: { anio: 'DESC' },
       }),
-      this.documentRepo.find({
-        where: { studentId: student.id },
-        order: { id: 'ASC' },
-      }),
+      this.studentDocumentsService.findEntitiesByStudentId(student.id),
       this.computeAsistenciaPct(student.id),
     ]);
 
@@ -1774,6 +2313,10 @@ export class StudentsService implements OnModuleInit {
   ) {
     await this.historyRepo.delete({ studentId });
     if (!rows.length) return;
+    const student = await this.studentsRepository.findOneBy({ id: studentId });
+    const afiliacion = student
+      ? await this.afiliacionDelAnio(student)
+      : { institutionId: null, codigoInstitucion: '' };
     await this.historyRepo.save(
       rows.map((row) =>
         this.historyRepo.create({
@@ -1783,47 +2326,11 @@ export class StudentsService implements OnModuleInit {
           seccion: row.seccion.trim(),
           promedio: row.promedio,
           estado: row.estado.trim(),
+          institutionId: afiliacion.institutionId,
+          codigoInstitucion: afiliacion.codigoInstitucion,
         }),
       ),
     );
-  }
-
-  private async replaceDocumentos(
-    studentId: number,
-    rows: Array<{
-      id?: number;
-      tipo: string;
-      numero?: string;
-      estado?: 'entregado' | 'pendiente' | 'vencido';
-      fechaEntrega?: string;
-      imagenUrl?: string;
-    }>,
-  ) {
-    await this.documentRepo.delete({ studentId });
-    if (!rows.length) return;
-    await this.documentRepo.save(
-      rows.map((row) =>
-        this.documentRepo.create({
-          studentId,
-          tipo: row.tipo.trim(),
-          numero: row.numero?.trim() ?? '',
-          estado: row.estado ?? 'pendiente',
-          fechaEntrega: row.fechaEntrega?.trim() ?? '',
-          imagenUrl: row.imagenUrl?.trim() ?? '',
-        }),
-      ),
-    );
-  }
-
-  private toDocumentResponse(doc: StudentDocument) {
-    return {
-      id: doc.id,
-      tipo: doc.tipo,
-      numero: doc.numero,
-      estado: doc.estado,
-      fechaEntrega: doc.fechaEntrega,
-      imagenUrl: doc.imagenUrl || undefined,
-    };
   }
 
   private async syncEstadosCambioSeccionDesdeHistorial(): Promise<void> {
@@ -1979,18 +2486,86 @@ export class StudentsService implements OnModuleInit {
 
   async findHistorialAcademicoList(
     search?: string,
-  ): Promise<HistorialAcademicoListItem[]> {
-    const students = await this.studentsRepository.find({
-      order: { apellido: 'ASC', nombre: 'ASC' },
-    });
-    const filtered = this.filterStudentsForSearch(students, search);
-    return Promise.all(filtered.map((s) => this.buildHistorialListItem(s)));
+    page = 1,
+    pageSize = 20,
+  ): Promise<{ items: HistorialAcademicoListItem[]; total: number; page: number; pageSize: number }> {
+    return this.findHistorialAcademicoPage(search, page, pageSize);
+  }
+
+  async findHistorialAcademicoPage(
+    search?: string,
+    page = 1,
+    pageSize = 20,
+    institutionId?: number,
+  ): Promise<{ items: HistorialAcademicoListItem[]; total: number; page: number; pageSize: number }> {
+    const safePage = Math.max(1, page);
+    const safeSize = Math.min(100, Math.max(1, pageSize));
+    const qb = this.studentsRepository
+      .createQueryBuilder('s')
+      .orderBy('s.apellido', 'ASC')
+      .addOrderBy('s.nombre', 'ASC');
+
+    if (institutionId !== undefined && institutionId > 0) {
+      qb.andWhere('s.institutionId = :institutionId', { institutionId });
+    }
+
+    if (search?.trim()) {
+      const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      tokens.forEach((token, index) => {
+        const param = `hq${index}`;
+        qb.andWhere(
+          `(LOWER(s.nombre) LIKE :${param} OR LOWER(s.apellido) LIKE :${param} OR LOWER(s.dni) LIKE :${param} OR LOWER(s.codigo) LIKE :${param})`,
+          { [param]: `%${token}%` },
+        );
+      });
+    }
+
+    const total = await qb.getCount();
+    const students = await qb
+      .skip((safePage - 1) * safeSize)
+      .take(safeSize)
+      .getMany();
+
+    const ids = students.map((s) => s.id);
+    const historialCounts = new Map<number, number>();
+    if (ids.length) {
+      const rows = await this.historyRepo
+        .createQueryBuilder('h')
+        .select('h.studentId', 'studentId')
+        .addSelect('COUNT(*)', 'total')
+        .where('h.studentId IN (:...ids)', { ids })
+        .groupBy('h.studentId')
+        .getRawMany<{ studentId: string; total: string }>();
+      for (const row of rows) {
+        historialCounts.set(Number(row.studentId), Number(row.total));
+      }
+    }
+
+    const items: HistorialAcademicoListItem[] = students.map((student) => ({
+      id: student.id,
+      codigo: student.codigo,
+      nombres: student.nombre,
+      apellidos: student.apellido,
+      dni: student.dni,
+      nivel: student.nivel,
+      gradoActual: student.grado,
+      seccionActual: student.seccion,
+      anioIngreso: student.anioIngreso,
+      aniosRegistrados: historialCounts.get(student.id) ?? 0,
+      promedioUltimo: null,
+      asistenciaPct: 0,
+      conductaNota: student.conductaNota ?? 'AD',
+      estado: student.estadoMatricula,
+    }));
+
+    return { items, total, page: safePage, pageSize: safeSize };
   }
 
   async findHistorialAcademicoDetalle(
     id: number,
+    user?: RequestUser,
   ): Promise<HistorialAcademicoDetalle> {
-    const student = await this.getOrFail(id);
+    const student = await this.getOrFail(id, user);
     const [historial, attendances, grades, asistenciaPct] = await Promise.all([
       this.historyRepo.find({
         where: { studentId: student.id },
@@ -2032,6 +2607,30 @@ export class StudentsService implements OnModuleInit {
       notasActuales,
       resumenNotas: this.buildResumenNotas(gradesAnioActual),
     };
+  }
+
+  private async afiliacionDelAnio(student: Student): Promise<{
+    institutionId: number | null;
+    codigoInstitucion: string;
+  }> {
+    if (!student.institutionId) return { institutionId: null, codigoInstitucion: '' };
+    const ie = await this.institutionRepo.findOneBy({ id: student.institutionId });
+    return {
+      institutionId: student.institutionId,
+      codigoInstitucion: ie?.codigoModular ?? '',
+    };
+  }
+
+  private async resolveInstitutionId(
+    auditCtx?: StudentAuditContext,
+  ): Promise<number | null> {
+    const user = (auditCtx?.req as { user?: { institutionId?: number | null } } | undefined)?.user;
+    if (user?.institutionId) return user.institutionId;
+    const institution = await this.institutionRepo.findOne({
+      where: {},
+      order: { id: 'ASC' },
+    });
+    return institution?.id ?? null;
   }
 
   private filterStudentsForSearch(
@@ -2222,9 +2821,27 @@ export class StudentsService implements OnModuleInit {
     };
   }
 
-  private async getOrFail(id: number): Promise<Student> {
+  private cloneStudent(student: Student): Student {
+    return this.studentsRepository.create({
+      ...student,
+      padre: { ...student.padre },
+      madre: { ...student.madre },
+      apoderado: { ...student.apoderado },
+    });
+  }
+
+  private usuarioDe(auditCtx?: StudentAuditContext): RequestUser | undefined {
+    return (auditCtx?.req as { user?: RequestUser } | undefined)?.user;
+  }
+
+  private async getOrFail(id: number, user?: RequestUser): Promise<Student> {
     const student = await this.studentsRepository.findOneBy({ id });
     if (!student) throw new NotFoundException(`Student ${id} no encontrado`);
+    const alcance = institutionIdDeAlcance(user);
+    if (alcance !== undefined && student.institutionId !== alcance) {
+      throw new NotFoundException(`Student ${id} no encontrado`);
+    }
     return student;
   }
 }
+

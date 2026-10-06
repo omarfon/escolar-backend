@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import {
@@ -14,6 +14,7 @@ import {
 } from '../competency-evaluations/entities/competency-evaluation.entity';
 import { InstitutionPeriodo } from '../institution/entities/institution.entity';
 import { InstitutionService } from '../institution/institution.service';
+import { Student } from '../students/entities/student.entity';
 import { GenerateReportCardsDto, UpdateReportCardBodyDto } from './dto/report-card.dto';
 import {
   ReportCard,
@@ -110,6 +111,8 @@ export class ReportCardsService {
     private readonly reportCardRepo: Repository<ReportCard>,
     @InjectRepository(CompetencyEvaluation)
     private readonly evalRepo: Repository<CompetencyEvaluation>,
+    @InjectRepository(Student)
+    private readonly studentRepo: Repository<Student>,
     private readonly competencyService: CompetencyEvaluationsService,
     private readonly institutionService: InstitutionService,
     private readonly pdfService: ReportCardsPdfService,
@@ -123,7 +126,12 @@ export class ReportCardsService {
     anio?: number;
     estado?: ReportCardEstado | 'todos';
   }): Promise<LibretaListResponse> {
-    const inst = await this.getInstitucionSnapshot();
+    const institutionId = await this.resolveInstitutionIdForSection(
+      query.nivel,
+      query.grado,
+      query.seccion,
+    );
+    const inst = await this.getInstitucionSnapshot(institutionId);
     const anioLectivo = query.anio ?? inst.anioLectivo;
 
     const matrix = await this.competencyService.getMatrix({
@@ -279,7 +287,12 @@ export class ReportCardsService {
     },
   ): Promise<{ buffer: Buffer; filename: string }> {
     const lib = await this.getOne(studentId, query);
-    const inst = await this.getInstitucionPdf();
+    const institutionId = await this.resolveInstitutionIdForSection(
+      query.nivel,
+      query.grado,
+      query.seccion,
+    );
+    const inst = await this.getInstitucionPdf(institutionId);
     const buffer = await this.pdfService.buildSingle(lib, inst);
     const safeName = lib.alumno.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_');
     return {
@@ -305,7 +318,12 @@ export class ReportCardsService {
       throw new NotFoundException('No hay libretas para generar el PDF');
     }
 
-    const inst = await this.getInstitucionPdf();
+    const institutionId = await this.resolveInstitutionIdForSection(
+      query.nivel,
+      query.grado,
+      query.seccion,
+    );
+    const inst = await this.getInstitucionPdf(institutionId);
     const buffer = await this.pdfService.buildSalon(libretas, inst);
     const gradoSafe = query.grado.replace(/[^\w°]/g, '');
     return {
@@ -556,8 +574,8 @@ export class ReportCardsService {
     return patch;
   }
 
-  private async getInstitucionSnapshot(): Promise<LibretaInstitucionDto> {
-    const config = await this.institutionService.getConfig();
+  private async getInstitucionSnapshot(institutionId: number): Promise<LibretaInstitucionDto> {
+    const config = await this.institutionService.getConfig(institutionId);
     const inst = config?.institution;
     const anioLectivo =
       parseInt(String(inst?.anio ?? new Date().getFullYear()), 10) ||
@@ -586,11 +604,28 @@ export class ReportCardsService {
     };
   }
 
-  private async getInstitucionPdf(): Promise<InstitucionPdfInfo> {
-    const inst = await this.getInstitucionSnapshot();
+  private async getInstitucionPdf(institutionId: number): Promise<InstitucionPdfInfo> {
+    const inst = await this.getInstitucionSnapshot(institutionId);
     return {
       ...inst,
       anioLectivo: String(inst.anioLectivo),
     };
+  }
+
+  private async resolveInstitutionIdForSection(
+    nivel: string,
+    grado: string,
+    seccion: string,
+  ): Promise<number> {
+    const student = await this.studentRepo.findOne({
+      where: { nivel, grado, seccion },
+      select: { institutionId: true },
+    });
+    if (!student?.institutionId) {
+      throw new BadRequestException(
+        'No se pudo determinar la institución del aula indicada',
+      );
+    }
+    return student.institutionId;
   }
 }

@@ -1,10 +1,13 @@
 import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity('salones')
-@Index(['anioEscolar', 'nivel', 'grado', 'seccion'], { unique: true })
+@Index(['institutionId', 'anioEscolar', 'nivel', 'grado', 'seccion'], { unique: true })
 export class Salon {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int' })
+  institutionId: number;
 
   @Column({ type: 'int' })
   anioEscolar: number;

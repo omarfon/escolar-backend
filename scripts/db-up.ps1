@@ -11,8 +11,8 @@ try {
   exit 1
 }
 
-Write-Host '==> Levantando PostgreSQL (puerto 5433)...' -ForegroundColor Cyan
-docker compose up -d postgres
+Write-Host '==> Levantando PostgreSQL (5433) y MinIO (9000/9001)...' -ForegroundColor Cyan
+docker compose up -d postgres minio
 if ($LASTEXITCODE -ne 0) {
   Write-Host 'Fallo docker compose up. Pruebe: npm run db:reset' -ForegroundColor Red
   exit $LASTEXITCODE

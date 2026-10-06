@@ -81,6 +81,11 @@ export class UpdateCurriculumAreaDto {
   @IsOptional()
   @IsBoolean()
   activo?: boolean;
+
+  /** Motivo de cambio para auditoría (obligatorio al desactivar). */
+  @IsOptional()
+  @IsString()
+  motivo?: string;
 }
 
 export class CreateCurriculumSubjectDto {

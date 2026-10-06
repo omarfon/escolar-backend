@@ -8,9 +8,12 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { FeriadosMaestrosService } from './feriados.service';
+import { MaestrosAuthRequest } from '../common/maestros-tenant.util';
 import {
   CreateMaestroFeriadoDto,
   UpdateMaestroFeriadoDto,
@@ -30,13 +33,17 @@ export class FeriadosMaestrosController {
     @Query('activo') activo?: string,
     @Query('desde') desde?: string,
     @Query('hasta') hasta?: string,
+    @Req() req?: Request,
   ) {
-    return this.feriadosService.findAll({
-      anioEscolar: anioEscolar ? +anioEscolar : undefined,
-      activo: activo === undefined ? undefined : activo === 'true',
-      desde,
-      hasta,
-    });
+    return this.feriadosService.findAll(
+      {
+        anioEscolar: anioEscolar ? +anioEscolar : undefined,
+        activo: activo === undefined ? undefined : activo === 'true',
+        desde,
+        hasta,
+      },
+      req,
+    );
   }
 
   @Get('dias-clase')
@@ -66,8 +73,8 @@ export class FeriadosMaestrosController {
   @Post()
   @RequirePermiso('asistencia.ver', 'matricula.ver', 'horarios.ver')
   @UseGuards(PermisoGuard)
-  create(@Body() dto: CreateMaestroFeriadoDto) {
-    return this.feriadosService.create(dto);
+  create(@Body() dto: CreateMaestroFeriadoDto, @Req() req: Request) {
+    return this.feriadosService.create(dto, req as MaestrosAuthRequest);
   }
 
   @Patch(':id')
@@ -76,14 +83,15 @@ export class FeriadosMaestrosController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateMaestroFeriadoDto,
+    @Req() req: Request,
   ) {
-    return this.feriadosService.update(id, dto);
+    return this.feriadosService.update(id, dto, req as MaestrosAuthRequest);
   }
 
   @Delete(':id')
   @RequirePermiso('asistencia.ver', 'matricula.ver', 'horarios.ver')
   @UseGuards(PermisoGuard)
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.feriadosService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.feriadosService.remove(id, req as MaestrosAuthRequest);
   }
 }

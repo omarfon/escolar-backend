@@ -11,6 +11,17 @@ import {
   UpdateMaestroFeriadoDto,
 } from './dto/maestro-feriado.dto';
 import { MAESTRO_FERIADOS_SEED } from './feriados-seed.data';
+import { MaestroAnioEscolar } from '../anios-escolares/entities/maestro-anio-escolar.entity';
+import { Institution } from '../../institution/entities/institution.entity';
+import {
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  filterAniosEscolaresPorInstitucion,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosAniosEscolares,
+  resolveSeedInstitutionId,
+} from '../common/maestros-tenant.util';
 
 export interface DiasClaseResumen {
   anioEscolar: number;
@@ -43,29 +54,61 @@ export class FeriadosMaestrosService {
   constructor(
     @InjectRepository(MaestroFeriado)
     private readonly feriadoRepo: Repository<MaestroFeriado>,
+    @InjectRepository(MaestroAnioEscolar)
+    private readonly anioEscolarRepo: Repository<MaestroAnioEscolar>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
   ) {}
 
   async seedCatalogIfEmpty(): Promise<void> {
     const count = await this.feriadoRepo.count();
     if (count > 0) return;
+    const institutionId = await resolveSeedInstitutionId(this.institutionRepo);
     await this.feriadoRepo.save(
       MAESTRO_FERIADOS_SEED.map((f) =>
-        this.feriadoRepo.create({ ...f, activo: true, descripcion: '' }),
+        this.feriadoRepo.create({
+          ...f,
+          institutionId,
+          activo: true,
+          descripcion: '',
+        }),
       ),
     );
   }
 
-  findAll(query?: {
-    anioEscolar?: number;
-    activo?: boolean;
-    desde?: string;
-    hasta?: string;
-  }): Promise<MaestroFeriado[]> {
+  async findAll(
+    query?: {
+      anioEscolar?: number;
+      activo?: boolean;
+      desde?: string;
+      hasta?: string;
+    },
+    req?: MaestrosAuthRequest,
+  ): Promise<MaestroFeriado[]> {
+    const scope = req
+      ? await resolveMaestrosAniosEscolares(req, this.anioEscolarRepo)
+      : null;
+    const institutionId = scope?.institutionId;
+    const aniosInstitucion = scope?.anios;
+    if (req && !scope) return [];
+
+    const aniosFiltrados =
+      aniosInstitucion !== undefined
+        ? filterAniosEscolaresPorInstitucion(aniosInstitucion, query?.anioEscolar)
+        : undefined;
+    if (aniosFiltrados !== undefined && !aniosFiltrados.length) return [];
+
     const qb = this.feriadoRepo
       .createQueryBuilder('f')
       .orderBy('f.fecha', 'ASC');
 
-    if (query?.anioEscolar) {
+    applyInstitutionIdWhere(qb, 'f', institutionId);
+
+    if (aniosFiltrados?.length) {
+      qb.andWhere('f.anioEscolar IN (:...aniosInstitucion)', {
+        aniosInstitucion: aniosFiltrados,
+      });
+    } else if (query?.anioEscolar) {
       qb.andWhere('f.anioEscolar = :anioEscolar', {
         anioEscolar: query.anioEscolar,
       });
@@ -83,9 +126,19 @@ export class FeriadosMaestrosService {
     return qb.getMany();
   }
 
-  async create(dto: CreateMaestroFeriadoDto): Promise<MaestroFeriado> {
+  async create(
+    dto: CreateMaestroFeriadoDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroFeriado> {
+    const institutionId = requireMaestrosInstitutionId(req);
+
     const dup = await this.feriadoRepo.findOne({
-      where: { anioEscolar: dto.anioEscolar, fecha: dto.fecha, activo: true },
+      where: {
+        institutionId,
+        anioEscolar: dto.anioEscolar,
+        fecha: dto.fecha,
+        activo: true,
+      },
     });
     if (dup) {
       throw new BadRequestException(
@@ -96,6 +149,7 @@ export class FeriadosMaestrosService {
     return this.feriadoRepo.save(
       this.feriadoRepo.create({
         ...dto,
+        institutionId,
         tipo: dto.tipo ?? 'institucional',
         descripcion: dto.descripcion?.trim() ?? '',
         activo: dto.activo ?? true,
@@ -103,14 +157,21 @@ export class FeriadosMaestrosService {
     );
   }
 
-  async update(id: number, dto: UpdateMaestroFeriadoDto): Promise<MaestroFeriado> {
+  async update(
+    id: number,
+    dto: UpdateMaestroFeriadoDto,
+    req: MaestrosAuthRequest,
+  ): Promise<MaestroFeriado> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const feriado = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(feriado, institutionId);
+
     const anioEscolar = dto.anioEscolar ?? feriado.anioEscolar;
     const fecha = dto.fecha ?? feriado.fecha;
 
     if (dto.anioEscolar !== undefined || dto.fecha !== undefined) {
       const dup = await this.feriadoRepo.findOne({
-        where: { anioEscolar, fecha, activo: true },
+        where: { institutionId, anioEscolar, fecha, activo: true },
       });
       if (dup && dup.id !== id) {
         throw new BadRequestException(
@@ -126,8 +187,13 @@ export class FeriadosMaestrosService {
     return this.feriadoRepo.save(feriado);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const feriado = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(feriado, institutionId);
     feriado.activo = false;
     await this.feriadoRepo.save(feriado);
     return { deleted: true, id };

@@ -118,6 +118,14 @@ export class ParentsController {
     return this.parentsService.getAcademicTracking(+studentId, email);
   }
 
+  @Get('children/:studentId/conduct')
+  getConduct(
+    @Param('studentId') studentId: string,
+    @Query('email') email: string,
+  ) {
+    return this.parentsService.getConductForChild(+studentId, email ?? '');
+  }
+
   @Get('children/:studentId/tasks')
   getTasks(
     @Param('studentId') studentId: string,

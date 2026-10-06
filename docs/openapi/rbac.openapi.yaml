@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Control RBAC
+  version: 1.0.0
+paths:
+  /rbac/context:
+    get:
+      summary: Contexto RBAC institucional y ámbitos
+      tags: [RBAC]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Contexto con ámbitos MINEDU/DRE/UGEL/IE }
+        '403': { description: Sin permiso admin.roles o admin.usuarios }
+  /rbac/audit:
+    get:
+      summary: Auditoría de cambios RBAC (asignaciones y permisos)
+      tags: [RBAC]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: entidad, in: query, schema: { type: string, enum: [user_role_assignment, role_permission] } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Historial paginado }
+  /rbac/users/{id}/effective-auth:
+    get:
+      summary: Permisos efectivos de un usuario
+      tags: [RBAC]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Roles, permisos unión y ámbitos }

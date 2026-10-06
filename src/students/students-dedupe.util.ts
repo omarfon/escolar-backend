@@ -1,3 +1,4 @@
+import { normalizeGradoMatricula } from '../maestros/salones/salones.util';
 import { Student } from './entities/student.entity';
 
 export function studentAulaKey(student: Pick<Student, 'nivel' | 'grado' | 'seccion'>): string {
@@ -30,12 +31,14 @@ export function listStudentsForAula(
   grado: string,
   seccion: string,
 ): Student[] {
+  const nivelNorm = nivel.trim();
+  const gradoNorm = normalizeGradoMatricula(grado);
   return dedupeStudentsByPerson(
     students.filter(
       (s) =>
         isStudentMatriculaActiva(s) &&
-        s.nivel === nivel &&
-        s.grado === grado &&
+        s.nivel.trim() === nivelNorm &&
+        normalizeGradoMatricula(s.grado) === gradoNorm &&
         matchesStudentSection(s, seccion),
     ),
   );

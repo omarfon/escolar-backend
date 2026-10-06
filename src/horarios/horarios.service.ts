@@ -14,7 +14,16 @@ import {
   ResolveHorarioConflictsDto,
   UpdateHorarioBlockDto,
 } from './dto/horario.dto';
-import { CurriculaService } from '../curricula/curricula.service';
+import {
+  CurriculaActorContext,
+  CurriculaService,
+} from '../curricula/curricula.service';
+import {
+  assertMaestroBelongsToInstitution,
+  requireMaestrosInstitutionId,
+} from '../maestros/common/maestros-tenant.util';
+import type { MaestrosAuthRequest } from '../maestros/common/maestros-tenant.util';
+import type { Request } from 'express';
 import { Salon } from '../maestros/salones/entities/salon.entity';
 import { CurriculumTeacherAssignment } from '../curricula/entities/curriculum-teacher-assignment.entity';
 import { Docente } from '../maestros/docentes/entities/docente.entity';
@@ -153,23 +162,38 @@ export class HorariosService {
     return this.getPeriodosForYear(anioEscolar);
   }
 
-  async getContext(anioEscolar: number): Promise<HorarioContextResponse> {
+  async getContext(
+    anioEscolar: number,
+    ctx?: CurriculaActorContext,
+  ): Promise<HorarioContextResponse> {
     const periodosDb = await this.ensurePeriodos(anioEscolar);
     const periodos = periodosDb.map((p) => this.mapPeriodo(p));
 
     const asignacionCtx = await this.curriculaService.getAsignacionContext(
       anioEscolar,
+      undefined,
+      ctx,
     );
 
-    const salones = await this.salonRepo.find({
-      where: { anioEscolar, activo: true },
-      order: { nivel: 'ASC', grado: 'ASC', seccion: 'ASC' },
-    });
+    const institutionId = ctx?.institutionId;
+    const curriculumIds = asignacionCtx.curriculas.map((c) => c.id);
+    const docenteIds = asignacionCtx.docentes.map((d) => d.id);
 
-    const blocksDb = await this.blockRepo.find({
-      where: { anioEscolar, activo: true },
-      order: { id: 'ASC' },
-    });
+    const salones =
+      institutionId != null
+        ? await this.salonRepo.find({
+            where: { anioEscolar, activo: true, institutionId },
+            order: { nivel: 'ASC', grado: 'ASC', seccion: 'ASC' },
+          })
+        : [];
+
+    const blocksDb =
+      docenteIds.length > 0
+        ? await this.blockRepo.find({
+            where: { anioEscolar, activo: true, docenteId: In(docenteIds) },
+            order: { id: 'ASC' },
+          })
+        : [];
     const blocks = blocksDb.map((b) => this.mapBlock(b));
 
     const cursos = asignacionCtx.cursos.map((c) => ({
@@ -190,9 +214,12 @@ export class HorariosService {
 
     const docMap = new Map(docentes.map((d) => [d.id, d]));
 
-    const assignments = await this.assignmentRepo.find({
-      where: { activo: true },
-    });
+    const assignments =
+      curriculumIds.length > 0
+        ? await this.assignmentRepo.find({
+            where: { activo: true, curriculumId: In(curriculumIds) },
+          })
+        : [];
 
     const salonesItems = this.mergeClasesAula(
       salones.map((s) => ({
@@ -225,13 +252,16 @@ export class HorariosService {
     };
   }
 
-  async createBlock(dto: CreateHorarioBlockDto): Promise<HorarioBlockResponse> {
+  async createBlock(
+    dto: CreateHorarioBlockDto,
+    req?: MaestrosAuthRequest,
+  ): Promise<HorarioBlockResponse> {
     const payload: CreateHorarioBlockDto = {
       ...dto,
       grado: normalizeGradoMatricula(dto.grado),
       seccion: dto.seccion.trim().toUpperCase(),
     };
-    await this.validateBlockRefs(payload);
+    await this.validateBlockRefs(payload, req);
 
     const periodos = await this.ensurePeriodos(payload.anioEscolar);
     const periodo = periodos.find((p) => p.id === payload.periodoId);
@@ -273,32 +303,41 @@ export class HorariosService {
   async updateBlock(
     id: number,
     dto: UpdateHorarioBlockDto,
+    req?: MaestrosAuthRequest,
   ): Promise<HorarioBlockResponse> {
     const block = await this.blockRepo.findOneBy({ id });
     if (!block) throw new NotFoundException(`Bloque ${id} no encontrado`);
+    await this.assertBlockInTenantScope(block, req);
 
     if (dto.cursoId != null) block.cursoId = dto.cursoId;
     if (dto.docenteId != null) block.docenteId = dto.docenteId;
     if (dto.activo != null) block.activo = dto.activo;
 
-    await this.validateBlockRefs({
-      anioEscolar: block.anioEscolar,
-      nivel: block.nivel,
-      grado: block.grado,
-      seccion: block.seccion,
-      dia: block.dia,
-      periodoId: block.periodoId,
-      cursoId: block.cursoId,
-      docenteId: block.docenteId,
-    });
+    await this.validateBlockRefs(
+      {
+        anioEscolar: block.anioEscolar,
+        nivel: block.nivel,
+        grado: block.grado,
+        seccion: block.seccion,
+        dia: block.dia,
+        periodoId: block.periodoId,
+        cursoId: block.cursoId,
+        docenteId: block.docenteId,
+      },
+      req,
+    );
 
     const saved = await this.blockRepo.save(block);
     return this.mapBlock(saved);
   }
 
-  async deleteBlock(id: number): Promise<{ ok: true }> {
+  async deleteBlock(
+    id: number,
+    req?: MaestrosAuthRequest,
+  ): Promise<{ ok: true }> {
     const block = await this.blockRepo.findOneBy({ id });
     if (!block) throw new NotFoundException(`Bloque ${id} no encontrado`);
+    await this.assertBlockInTenantScope(block, req);
     await this.blockRepo.remove(block);
     return { ok: true };
   }
@@ -350,24 +389,50 @@ export class HorariosService {
     };
   }
 
-  async getConflicts(anioEscolar: number): Promise<HorarioConflictoItem[]> {
-    const ctx = await this.getContext(anioEscolar);
-    return ctx.conflictos;
+  async getConflicts(
+    anioEscolar: number,
+    ctx?: CurriculaActorContext,
+  ): Promise<HorarioConflictoItem[]> {
+    const horarioCtx = await this.getContext(anioEscolar, ctx);
+    return horarioCtx.conflictos;
   }
 
-  private async validateBlockRefs(dto: {
-    anioEscolar: number;
-    nivel: string;
-    grado: string;
-    seccion: string;
-    dia: number;
-    periodoId: number;
-    cursoId: number;
-    docenteId: number;
-  }): Promise<void> {
+  private async assertBlockInTenantScope(
+    block: HorarioBlock,
+    req?: MaestrosAuthRequest,
+  ): Promise<void> {
+    if (!req) return;
+    const institutionId = requireMaestrosInstitutionId(req);
+    const docente = await this.docenteRepo.findOneBy({ id: block.docenteId });
+    if (!docente) {
+      throw new NotFoundException('Docente del bloque horario no encontrado');
+    }
+    assertMaestroBelongsToInstitution(docente, institutionId);
+  }
+
+  private async validateBlockRefs(
+    dto: {
+      anioEscolar: number;
+      nivel: string;
+      grado: string;
+      seccion: string;
+      dia: number;
+      periodoId: number;
+      cursoId: number;
+      docenteId: number;
+    },
+    req?: MaestrosAuthRequest,
+  ): Promise<void> {
+    const actorCtx: CurriculaActorContext | undefined = req
+      ? {
+          req: req as unknown as Request,
+          institutionId: requireMaestrosInstitutionId(req),
+        }
+      : undefined;
     const ctx = await this.curriculaService.getAsignacionContext(
       dto.anioEscolar,
       dto.nivel,
+      actorCtx,
     );
     const curso = ctx.cursos.find((c) => c.id === dto.cursoId);
     if (!curso) {

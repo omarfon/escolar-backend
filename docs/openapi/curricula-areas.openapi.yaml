@@ -1,0 +1,76 @@
+openapi: 3.0.3
+info:
+  title: Plan de estudios — Áreas curriculares
+  version: '1.0'
+  description: |
+    Registro y consulta de áreas del plan de estudios por currícula vigente.
+paths:
+  /api/v1/curricula/areas/context:
+    get:
+      summary: Contexto institucional y currículas vigentes con áreas
+      parameters:
+        - in: query
+          name: anio
+          schema: { type: integer, minimum: 2000 }
+      responses:
+        '200':
+          description: Contexto con currículas y áreas por nivel
+        '403':
+          description: Sin permiso curricula.ver
+  /api/v1/curricula/areas/list:
+    get:
+      summary: Listar áreas activas
+      parameters:
+        - in: query
+          name: curriculumId
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Lista de áreas
+  /api/v1/curricula/areas:
+    post:
+      summary: Registrar área curricular
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [curriculumId, nombre]
+              properties:
+                curriculumId: { type: integer }
+                nombre: { type: string, minLength: 2, maxLength: 120 }
+                nivel: { type: string }
+                orden: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Área creada
+        '400':
+          description: Validación o duplicado
+        '403':
+          description: Sin permiso curricula.gestionar
+  /api/v1/curricula/areas/{id}:
+    patch:
+      summary: Actualizar o desactivar área
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string, minLength: 2 }
+                orden: { type: integer }
+                activo: { type: boolean }
+                motivo: { type: string, minLength: 3 }
+      responses:
+        '200':
+          description: Área actualizada
+        '400':
+          description: Validación, duplicado o cursos activos vinculados
+        '403':
+          description: Sin permiso curricula.gestionar

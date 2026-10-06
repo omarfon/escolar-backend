@@ -22,4 +22,12 @@ export class StudentAcademicHistory {
 
   @Column({ length: 30, default: 'Promovido' })
   estado: string;
+
+  /** IE de ese año. Puede ser distinta a la de otros años del mismo alumno. */
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
+  /** Código modular de la IE en ese año. */
+  @Column({ length: 20, default: '' })
+  codigoInstitucion: string;
 }

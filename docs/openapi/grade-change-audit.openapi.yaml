@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Auditoría de notas
+  version: 1.0.0
+paths:
+  /grades/change-audit/context:
+    get:
+      summary: Contexto institucional y retención
+      tags: [Grades]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Contexto }
+        '403': { description: Sin permiso evaluacion.reportes }
+  /grades/change-audit:
+    get:
+      summary: Listar cambios en notas (paginado)
+      tags: [Grades]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: studentId, in: query, schema: { type: integer } }
+        - { name: gradeId, in: query, schema: { type: integer } }
+        - { name: curso, in: query, schema: { type: string } }
+        - { name: bimestre, in: query, schema: { type: integer } }
+        - { name: accion, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Historial append-only }
+  /grades/change-audit/export:
+    get:
+      summary: Exportar auditoría CSV
+      tags: [Grades]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: CSV UTF-8 }
+  /grades/{id}/change-audit:
+    get:
+      summary: Historial de cambios de una nota
+      tags: [Grades]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Historial por gradeId }

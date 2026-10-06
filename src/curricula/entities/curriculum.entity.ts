@@ -1,13 +1,17 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 export type CurriculumEstado = 'activo' | 'inactivo' | 'borrador';
 export type CurriculumTipoEscala = 'numerica' | 'literal' | 'competencia';
 export type CurriculumTipoPeriodo = 'bimestral' | 'trimestral';
 
 @Entity('curricula')
+@Index(['institutionId', 'anio', 'nivel'])
 export class Curriculum {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int' })
+  institutionId: number;
 
   @Column({ type: 'int' })
   anio: number;

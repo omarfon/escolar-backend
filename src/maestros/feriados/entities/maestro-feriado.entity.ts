@@ -3,10 +3,13 @@ import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 export type MaestroFeriadoTipo = 'nacional' | 'local' | 'institucional';
 
 @Entity('maestros_feriados')
-@Index(['anioEscolar', 'fecha'], { unique: true })
+@Index(['institutionId', 'anioEscolar', 'fecha'], { unique: true })
 export class MaestroFeriado {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int' })
+  institutionId: number;
 
   @Column({ type: 'int' })
   anioEscolar: number;

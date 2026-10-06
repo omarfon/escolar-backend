@@ -14,6 +14,15 @@ import {
   UpdateMaestroConductaTipoDto,
 } from './dto/faltas-reconocimientos.dto';
 import { FALTAS_RECONOCIMIENTOS_SEED } from './faltas-reconocimientos-seed.data';
+import { Institution } from '../../institution/entities/institution.entity';
+import {
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosInstitutionId,
+  resolveSeedInstitutionId,
+} from '../common/maestros-tenant.util';
 
 export interface MaestroConductaDescripcionResponse {
   id: number;
@@ -51,15 +60,19 @@ export class FaltasReconocimientosService {
     private readonly tipoRepo: Repository<MaestroConductaTipo>,
     @InjectRepository(MaestroConductaDescripcion)
     private readonly descRepo: Repository<MaestroConductaDescripcion>,
+    @InjectRepository(Institution)
+    private readonly institutionRepo: Repository<Institution>,
   ) {}
 
   async seedCatalogIfEmpty(): Promise<void> {
     const count = await this.tipoRepo.count();
     if (count > 0) return;
+    const institutionId = await resolveSeedInstitutionId(this.institutionRepo);
 
     for (const seed of FALTAS_RECONOCIMIENTOS_SEED) {
       const tipo = await this.tipoRepo.save(
         this.tipoRepo.create({
+          institutionId,
           codigo: seed.codigo,
           nombre: seed.nombre,
           categoria: seed.categoria,
@@ -82,7 +95,13 @@ export class FaltasReconocimientosService {
     }
   }
 
-  async findAll(activo?: boolean): Promise<MaestroConductaTipoResponse[]> {
+  async findAll(
+    activo?: boolean,
+    req?: MaestrosAuthRequest,
+  ): Promise<MaestroConductaTipoResponse[]> {
+    const institutionId = resolveMaestrosInstitutionId(req);
+    if (req && institutionId == null) return [];
+
     const qb = this.tipoRepo
       .createQueryBuilder('t')
       .leftJoinAndSelect('t.descripciones', 'd')
@@ -90,6 +109,8 @@ export class FaltasReconocimientosService {
       .addOrderBy('t.nombre', 'ASC')
       .addOrderBy('d.orden', 'ASC')
       .addOrderBy('d.id', 'ASC');
+
+    applyInstitutionIdWhere(qb, 't', institutionId);
 
     if (activo !== undefined) {
       qb.andWhere('t.activo = :activo', { activo });
@@ -101,19 +122,22 @@ export class FaltasReconocimientosService {
 
   async createTipo(
     dto: CreateMaestroConductaTipoDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroConductaTipoResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const codigo = (dto.codigo?.trim() || slugCodigo(dto.nombre)).slice(0, 40);
     if (!codigo) {
       throw new BadRequestException('No se pudo generar un código para el tipo');
     }
 
-    const dup = await this.tipoRepo.findOneBy({ codigo });
+    const dup = await this.tipoRepo.findOneBy({ institutionId, codigo });
     if (dup) {
       throw new BadRequestException(`Ya existe un tipo con código "${codigo}"`);
     }
 
     const saved = await this.tipoRepo.save(
       this.tipoRepo.create({
+        institutionId,
         codigo,
         nombre: dto.nombre.trim(),
         categoria: dto.categoria,
@@ -123,25 +147,33 @@ export class FaltasReconocimientosService {
       }),
     );
 
-    return this.findTipo(saved.id);
+    return this.findTipo(saved.id, institutionId);
   }
 
   async updateTipo(
     id: number,
     dto: UpdateMaestroConductaTipoDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroConductaTipoResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const tipo = await this.getTipoOrFail(id);
+    assertMaestroBelongsToInstitution(tipo, institutionId);
     if (dto.nombre !== undefined) tipo.nombre = dto.nombre.trim();
     if (dto.categoria !== undefined) tipo.categoria = dto.categoria;
     if (dto.icon !== undefined) tipo.icon = dto.icon.trim() || 'description';
     if (dto.orden !== undefined) tipo.orden = dto.orden;
     if (dto.activo !== undefined) tipo.activo = dto.activo;
     await this.tipoRepo.save(tipo);
-    return this.findTipo(id);
+    return this.findTipo(id, institutionId);
   }
 
-  async removeTipo(id: number): Promise<{ deleted: boolean; id: number }> {
+  async removeTipo(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const tipo = await this.getTipoOrFail(id);
+    assertMaestroBelongsToInstitution(tipo, institutionId);
     tipo.activo = false;
     await this.tipoRepo.save(tipo);
     await this.descRepo.update({ tipoId: id }, { activo: false });
@@ -151,8 +183,11 @@ export class FaltasReconocimientosService {
   async createDescripcion(
     tipoId: number,
     dto: CreateMaestroConductaDescripcionDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroConductaDescripcionResponse> {
-    await this.getTipoOrFail(tipoId);
+    const institutionId = requireMaestrosInstitutionId(req);
+    const tipo = await this.getTipoOrFail(tipoId);
+    assertMaestroBelongsToInstitution(tipo, institutionId);
     const texto = dto.texto.trim();
     if (!texto) {
       throw new BadRequestException('La descripción no puede estar vacía');
@@ -173,8 +208,12 @@ export class FaltasReconocimientosService {
   async updateDescripcion(
     id: number,
     dto: UpdateMaestroConductaDescripcionDto,
+    req: MaestrosAuthRequest,
   ): Promise<MaestroConductaDescripcionResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const desc = await this.getDescripcionOrFail(id);
+    const tipo = await this.getTipoOrFail(desc.tipoId);
+    assertMaestroBelongsToInstitution(tipo, institutionId);
     if (dto.texto !== undefined) {
       const texto = dto.texto.trim();
       if (!texto) {
@@ -190,19 +229,29 @@ export class FaltasReconocimientosService {
 
   async removeDescripcion(
     id: number,
+    req: MaestrosAuthRequest,
   ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const desc = await this.getDescripcionOrFail(id);
+    const tipo = await this.getTipoOrFail(desc.tipoId);
+    assertMaestroBelongsToInstitution(tipo, institutionId);
     desc.activo = false;
     await this.descRepo.save(desc);
     return { deleted: true, id };
   }
 
-  private async findTipo(id: number): Promise<MaestroConductaTipoResponse> {
+  private async findTipo(
+    id: number,
+    institutionId?: number,
+  ): Promise<MaestroConductaTipoResponse> {
     const tipo = await this.tipoRepo.findOne({
       where: { id },
       relations: { descripciones: true },
     });
     if (!tipo) throw new NotFoundException(`Tipo de conducta ${id} no encontrado`);
+    if (institutionId != null) {
+      assertMaestroBelongsToInstitution(tipo, institutionId);
+    }
     return this.toTipoResponse(tipo);
   }
 

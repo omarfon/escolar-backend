@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
-export type SectionChangeEstado = 'completado';
+export type SectionChangeEstado = 'pendiente' | 'completado' | 'cancelado';
 
 @Entity('section_changes')
 export class SectionChange {

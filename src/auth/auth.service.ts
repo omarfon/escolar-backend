@@ -1,11 +1,15 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuditLoggerService } from '../audit-logs/audit-logger.service';
-import { sanitizeAuditPayload } from '../audit-logs/audit-context.util';
+import {
+  parseActorFromRequest,
+  sanitizeAuditPayload,
+} from '../audit-logs/audit-context.util';
 import { LoginDto } from './dto/login.dto';
 import { UsersService } from '../users/users.service';
-import { RolesService } from '../roles/roles.service';
+import { UserRolesService } from '../users/user-roles.service';
 import { UserRole } from '../users/entities/user.entity';
+import { verifyPassword } from './utils/password-crypto.util';
 
 interface AuthUserSource {
   id: number;
@@ -21,13 +25,13 @@ interface AuthUserSource {
 export class AuthService {
   constructor(
     private readonly usersService: UsersService,
-    private readonly rolesService: RolesService,
+    private readonly userRolesService: UserRolesService,
     private readonly auditLogger: AuditLoggerService,
   ) {}
 
   async login(dto: LoginDto, req: Request) {
     const user = await this.usersService.findByLogin(dto.username);
-    if (!user || user.password !== dto.password) {
+    if (!user || !verifyPassword(dto.password, user.password)) {
       this.auditLogger.logLogin(req, 'error', {
         usuarioNombre: dto.username,
         usuarioRol: '',
@@ -51,27 +55,17 @@ export class AuthService {
 
     await this.usersService.touchUltimoAcceso(user.id);
 
-    const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
-    const roles = [user.rol] as UserRole[];
-    const esAdmin = await this.rolesService.isAdminRole(user.rol);
+    const effective = await this.userRolesService.resolveEffectiveAuth(user.id);
+    const roles = effective.roleCodigos;
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 86400;
-    const payload = {
-      sub: String(user.id),
-      username: user.email,
-      nombre: `${user.nombres} ${user.apellidos}`.trim() || user.email,
-      roles,
-      iat: now,
-      exp,
-    };
-    const b64 = (v: object) =>
-      Buffer.from(JSON.stringify(v)).toString('base64url');
-    const token = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(payload)}.mock_signature`;
+    const token = this.buildAccessToken(user, roles, now, exp, effective.institutionId);
 
     this.auditLogger.logLogin(req, 'success', {
       usuarioId: user.id,
       usuarioNombre: `${user.nombres} ${user.apellidos}`.trim() || user.email,
-      usuarioRol: user.rol,
+      usuarioRol: effective.primaryRole,
+      institutionId: effective.institutionId,
     }, {
       ...(sanitizeAuditPayload({ username: user.username, email: user.email }) ?? {}),
       userAgent: req.headers['user-agent'] ?? '',
@@ -82,7 +76,7 @@ export class AuthService {
       refreshToken: `refresh_${user.id}_${now}`,
       expiresIn: 86400,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles, esAdmin),
+      user: this.buildAuthUser(user, effective),
     };
   }
 
@@ -91,16 +85,31 @@ export class AuthService {
     if (!user || user.estado !== 'activo') {
       throw new UnauthorizedException('Usuario no encontrado o inactivo');
     }
-    const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
-    const roles = [user.rol] as UserRole[];
-    const esAdmin = await this.rolesService.isAdminRole(user.rol);
+    const authUser = await this.usersService.findAuthUserById(userId);
+    const effective = await this.userRolesService.resolveEffectiveAuth(userId);
     return {
       accessToken: null,
       refreshToken: null,
       expiresIn: 0,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles, esAdmin),
+      user: this.buildAuthUser(
+        authUser ?? {
+          id: userId,
+          nombres: user.nombres,
+          apellidos: user.apellidos,
+          email: user.email,
+          username: user.username,
+          estado: user.estado,
+        },
+        effective,
+      ),
     };
+  }
+
+  logout(req: Request): { message: string } {
+    const actor = parseActorFromRequest(req);
+    this.auditLogger.logLogout(req, actor);
+    return { message: 'Sesión cerrada correctamente' };
   }
 
   async refreshFromToken(refreshToken: string, req: Request) {
@@ -112,41 +121,55 @@ export class AuthService {
   }
 
   async refreshSession(userId: number, req: Request) {
-    const user = await this.usersService.findOne(userId);
+    const user = await this.usersService.findAuthUserById(userId);
     if (!user || user.estado !== 'activo') {
       throw new UnauthorizedException('Usuario no encontrado o inactivo');
     }
-    const permisos = await this.rolesService.getPermissionsByRoleCodigo(user.rol);
-    const roles = [user.rol] as UserRole[];
-    const esAdmin = await this.rolesService.isAdminRole(user.rol);
+    const effective = await this.userRolesService.resolveEffectiveAuth(user.id);
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 86400;
-    const payload = {
-      sub: String(user.id),
-      username: user.email,
-      nombre: `${user.nombres} ${user.apellidos}`.trim() || user.email,
-      roles,
-      iat: now,
+    const token = this.buildAccessToken(
+      user,
+      effective.roleCodigos,
+      now,
       exp,
-    };
-    const b64 = (v: object) =>
-      Buffer.from(JSON.stringify(v)).toString('base64url');
-    const token = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(payload)}.mock_signature`;
+      effective.institutionId,
+    );
 
     return {
       accessToken: token,
       refreshToken: `refresh_${user.id}_${now}`,
       expiresIn: 86400,
       tokenType: 'Bearer',
-      user: this.buildAuthUser(user, permisos, roles, esAdmin),
+      user: this.buildAuthUser(user as AuthUserSource, effective),
     };
+  }
+
+  buildAccessToken(
+    user: AuthUserSource & { sessionVersion?: number },
+    roles: UserRole[],
+    iat: number,
+    exp: number,
+    institutionId?: number | null,
+  ): string {
+    const payload = {
+      sub: String(user.id),
+      username: user.email,
+      nombre: `${user.nombres} ${user.apellidos}`.trim() || user.email,
+      roles,
+      institutionId: institutionId ?? null,
+      sv: user.sessionVersion ?? 0,
+      iat,
+      exp,
+    };
+    const b64 = (v: object) =>
+      Buffer.from(JSON.stringify(v)).toString('base64url');
+    return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(payload)}.mock_signature`;
   }
 
   private buildAuthUser(
     user: AuthUserSource,
-    permisos: string[],
-    roles: UserRole[],
-    esAdmin = false,
+    effective: Awaited<ReturnType<UserRolesService['resolveEffectiveAuth']>>,
   ) {
     const ultimo =
       user.ultimoAcceso instanceof Date
@@ -159,10 +182,18 @@ export class AuthService {
       apellido: user.apellidos,
       email: user.email,
       username: user.username,
-      roles: roles.map((r) => ({ id: r, codigo: r, nombre: r, nivel: 1 })),
-      permisos,
-      esAdmin,
-      institucionId: 'inst-001',
+      roles: effective.roleCodigos.map((r) => ({
+        id: r,
+        codigo: r,
+        nombre: r,
+        nivel: r === effective.primaryRole ? 1 : 2,
+      })),
+      roleAssignments: effective.assignments,
+      ambitos: effective.ambitos,
+      rolPrincipal: effective.primaryRole,
+      institutionId: effective.institutionId,
+      permisos: effective.permisos,
+      esAdmin: effective.esAdmin,
       estado: user.estado,
       ultimoAcceso: ultimo,
       requiereCambioPassword: false,

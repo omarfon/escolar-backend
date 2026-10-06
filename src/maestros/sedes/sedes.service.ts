@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
-  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,6 +11,7 @@ import {
   CreateMaestroSedeDto,
   UpdateMaestroSedeDto,
 } from './dto/maestro-sede.dto';
+import { assertMaestroBelongsToInstitution } from '../common/maestros-tenant.util';
 
 export interface MaestroSedeResponse {
   id: number;
@@ -28,6 +28,7 @@ export interface MaestroSedeResponse {
   niveles: string[];
   turnos: string[];
   estado: 'activo' | 'inactivo';
+  institucionNombre?: string;
 }
 
 export interface MaestroSedesCatalogResponse {
@@ -42,7 +43,7 @@ export interface MaestroSedesCatalogResponse {
 }
 
 @Injectable()
-export class SedesMaestrosService implements OnModuleInit {
+export class SedesMaestrosService {
   constructor(
     @InjectRepository(Sede)
     private readonly sedeRepo: Repository<Sede>,
@@ -50,16 +51,14 @@ export class SedesMaestrosService implements OnModuleInit {
     private readonly institutionRepo: Repository<Institution>,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    const institution = await this.findFirstInstitution();
-    if (!institution) return;
-    await this.backfillInstitutionId(institution.id);
-  }
-
   async findCatalog(institutionId?: number): Promise<MaestroSedesCatalogResponse> {
-    const institution = institutionId
-      ? await this.getInstitutionOrFail(institutionId)
-      : await this.ensureInstitution();
+    if (institutionId == null || institutionId < 1) {
+      throw new BadRequestException(
+        'Seleccione una institución educativa (header X-Institution-Id o query institutionId)',
+      );
+    }
+
+    const institution = await this.getInstitutionOrFail(institutionId);
 
     const sedes = await this.sedeRepo.find({
       where: { institutionId: institution.id },
@@ -74,14 +73,41 @@ export class SedesMaestrosService implements OnModuleInit {
         ruc: institution.ruc,
         codigoModular: institution.codigoModular,
       },
-      sedes: sedes.map((s) => this.toResponse(s, institution.id)),
+      sedes: sedes.map((s) => this.toResponse(s, institution.id, institution.nombre)),
     };
   }
 
-  async create(dto: CreateMaestroSedeDto): Promise<MaestroSedeResponse> {
-    const institution = dto.institutionId
-      ? await this.getInstitutionOrFail(dto.institutionId)
-      : await this.ensureInstitution();
+  async findTodas(): Promise<MaestroSedesCatalogResponse> {
+    const institutions = await this.institutionRepo.find({ order: { nombre: 'ASC' } });
+    const porId = new Map(institutions.map((ie) => [ie.id, ie]));
+    const sedes = await this.sedeRepo.find({ order: { nombre: 'ASC' } });
+    return {
+      institution: {
+        id: 0,
+        nombre: 'Todas las instituciones',
+        siglas: 'SIAGIE',
+        ruc: '',
+        codigoModular: '',
+      },
+      sedes: sedes.map((sede) =>
+        this.toResponse(
+          sede,
+          sede.institutionId ?? 0,
+          porId.get(sede.institutionId ?? 0)?.nombre ?? '',
+        ),
+      ),
+    };
+  }
+
+  async create(
+    dto: CreateMaestroSedeDto,
+    institutionId?: number,
+  ): Promise<MaestroSedeResponse> {
+    const resolvedId = dto.institutionId ?? institutionId;
+    if (!resolvedId) {
+      throw new BadRequestException('Institución educativa requerida');
+    }
+    const institution = await this.getInstitutionOrFail(resolvedId);
 
     const nombre = dto.nombre.trim();
     const dup = await this.sedeRepo.findOne({
@@ -114,14 +140,23 @@ export class SedesMaestrosService implements OnModuleInit {
     return this.toResponse(saved, institution.id);
   }
 
-  async update(id: number, dto: UpdateMaestroSedeDto): Promise<MaestroSedeResponse> {
+  async update(
+    id: number,
+    dto: UpdateMaestroSedeDto,
+    institutionId?: number,
+  ): Promise<MaestroSedeResponse> {
     const current = await this.getSedeOrFail(id);
-    const institutionId = current.institutionId ?? (await this.ensureInstitution()).id;
+    if (institutionId != null) {
+      assertMaestroBelongsToInstitution(current, institutionId);
+    }
+    if (!current.institutionId) {
+      throw new BadRequestException('Sede sin institución asignada');
+    }
 
     if (dto.nombre !== undefined) {
       const nombre = dto.nombre.trim();
       const dup = await this.sedeRepo.findOne({
-        where: { institutionId, nombre },
+        where: { institutionId: current.institutionId, nombre },
       });
       if (dup && dup.id !== id) {
         throw new BadRequestException(
@@ -142,17 +177,26 @@ export class SedesMaestrosService implements OnModuleInit {
     if (dto.niveles !== undefined) current.niveles = dto.niveles;
     if (dto.turnos !== undefined) current.turnos = dto.turnos;
     if (dto.estado !== undefined) current.estado = dto.estado;
-    if (!current.institutionId) current.institutionId = institutionId;
 
     const saved = await this.sedeRepo.save(current);
-    return this.toResponse(saved, institutionId);
+    return this.toResponse(saved, current.institutionId);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    institutionId?: number,
+  ): Promise<{ deleted: boolean; id: number }> {
     const current = await this.getSedeOrFail(id);
+    if (institutionId != null) {
+      assertMaestroBelongsToInstitution(current, institutionId);
+    }
+    if (!current.institutionId) {
+      throw new BadRequestException('Sede sin institución asignada');
+    }
+
     const activas = await this.sedeRepo.count({
       where: {
-        institutionId: current.institutionId ?? undefined,
+        institutionId: current.institutionId,
         estado: 'activo',
       },
     });
@@ -164,32 +208,6 @@ export class SedesMaestrosService implements OnModuleInit {
     current.estado = 'inactivo';
     await this.sedeRepo.save(current);
     return { deleted: true, id };
-  }
-
-  private async backfillInstitutionId(institutionId: number): Promise<void> {
-    await this.sedeRepo
-      .createQueryBuilder()
-      .update(Sede)
-      .set({ institutionId })
-      .where('"institutionId" IS NULL')
-      .execute();
-  }
-
-  private async findFirstInstitution(): Promise<Institution | null> {
-    return this.institutionRepo.findOne({
-      where: {},
-      order: { id: 'ASC' },
-    });
-  }
-
-  private async ensureInstitution(): Promise<Institution> {
-    const institution = await this.findFirstInstitution();
-    if (!institution) {
-      throw new NotFoundException(
-        'No hay institución registrada. Ejecute npm run db:sedes-data o inicie el backend con seed.',
-      );
-    }
-    return institution;
   }
 
   private async getInstitutionOrFail(id: number): Promise<Institution> {
@@ -206,7 +224,7 @@ export class SedesMaestrosService implements OnModuleInit {
     return sede;
   }
 
-  private toResponse(sede: Sede, institutionId: number): MaestroSedeResponse {
+  private toResponse(sede: Sede, institutionId: number, institucionNombre = ''): MaestroSedeResponse {
     return {
       id: sede.id,
       institutionId: sede.institutionId ?? institutionId,
@@ -222,6 +240,7 @@ export class SedesMaestrosService implements OnModuleInit {
       niveles: sede.niveles ?? [],
       turnos: sede.turnos ?? [],
       estado: sede.estado,
+      institucionNombre,
     };
   }
 }

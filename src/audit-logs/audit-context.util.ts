@@ -1,5 +1,10 @@
+import { randomUUID } from 'crypto';
 import type { Request } from 'express';
 import { RequestUser } from '../auth/interfaces/request-user.interface';
+import {
+  institutionIdDeAlcance,
+  InstitutionScopeRequest,
+} from '../auth/tenant-scope.util';
 import { AuditAccion, AuditNivel } from './entities/audit-log.entity';
 
 const SENSITIVE_KEYS = [
@@ -29,12 +34,40 @@ export interface AuditHttpMeta {
 
 type RequestWithUser = Request & { user?: RequestUser };
 
+export function getCorrelationId(req: Request): string {
+  const header =
+    req.headers['x-correlation-id'] ??
+    req.headers['x-request-id'] ??
+    req.headers['idempotency-key'];
+  if (typeof header === 'string' && header.trim()) {
+    return header.trim().slice(0, 64);
+  }
+  return cryptoRandomId();
+}
+
+function cryptoRandomId(): string {
+  try {
+    return randomUUID();
+  } catch {
+    return `audit-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
 export function getClientIp(req: Request): string {
   const forwarded = req.headers['x-forwarded-for'];
   if (typeof forwarded === 'string' && forwarded.length) {
     return forwarded.split(',')[0].trim();
   }
   return req.ip ?? req.socket?.remoteAddress ?? '';
+}
+
+/** IE activa para bitácora (asignación RBAC o header/query SIAGIE). */
+export function resolveAuditInstitutionId(req?: Request): number | null {
+  if (!req) return null;
+  const user = (req as RequestWithUser).user;
+  const id = institutionIdDeAlcance(user, req as InstitutionScopeRequest);
+  if (id == null || id < 1) return null;
+  return id;
 }
 
 export function parseActorFromRequest(req: Request): AuditActor {
@@ -118,6 +151,7 @@ export function shouldSkipAuditPath(path: string): boolean {
     p.startsWith('/audit-logs') ||
     p === '/health' ||
     p.startsWith('/auth/login') ||
+    p.startsWith('/auth/logout') ||
     p.startsWith('/auth/refresh')
   );
 }
@@ -173,6 +207,10 @@ function mapModulo(resource: string, segments: string[]): string {
     institution: 'institucion',
     roles: 'usuarios',
     waitlist: 'matricula',
+    'enrollment-evaluations': 'matricula',
+    'enrollment-feedbacks': 'matricula',
+    'enrollment-history': 'matricula',
+    'transfer-requests': 'traslados',
     parents: 'portal_padres',
     'continuity-enrollment': 'matricula',
     'conduct-incidents': 'convivencia',
@@ -228,6 +266,10 @@ function mapEntidad(resource: string, sub: string, path: string): string {
     institution: 'institucion',
     roles: 'rol',
     waitlist: 'lista_espera',
+    'enrollment-evaluations': 'evaluacion_matricula',
+    'enrollment-feedbacks': 'retroalimentacion_matricula',
+    'enrollment-history': 'historial_matricula',
+    'transfer-requests': 'solicitud_traslado',
     parents: 'seguimiento_padre',
     'continuity-enrollment': 'continuidad',
     'conduct-incidents': 'incidente',

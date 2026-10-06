@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Sede } from './entities/sede.entity';
@@ -92,43 +93,64 @@ export class InstitutionService {
     private readonly seccionRepo: Repository<GradeSection>,
     @Inject(forwardRef(() => GradingConfigService))
     private readonly gradingConfigService: GradingConfigService,
+    @Inject(forwardRef(() => PeriodosAcademicosMaestrosService))
+    private readonly periodosAcademicosService: PeriodosAcademicosMaestrosService,
   ) {}
 
-  async getConfig() {
-    const institution = await this.ensureInstitution();
-    const campuses = await this.sedeRepo.find({ order: { id: 'ASC' } });
-    const niveles = await this.findAllEducationLevels();
+  async getConfig(institutionId: number) {
+    const institution = await this.getInstitutionOrFail(institutionId);
+    const campuses = await this.findAllCampuses(institutionId);
+    const niveles = await this.findAllEducationLevels(institutionId);
     return {
       institution: { ...institution, niveles },
       campuses,
     };
   }
 
-  async updateInstitution(dto: UpdateInstitutionDto) {
-    const current = await this.ensureInstitution();
+  async getPublicContext(institutionId: number) {
+    const institution = await this.getInstitutionOrFail(institutionId);
+    return {
+      nombre: institution.nombre,
+      siglas: institution.siglas,
+      ruc: institution.ruc,
+      codigoModular: institution.codigoModular,
+      direccion: institution.direccion,
+      anioEscolar: institution.anio,
+      ugel: institution.ugel,
+      dre: institution.dre,
+    };
+  }
+
+  async updateInstitution(institutionId: number, dto: UpdateInstitutionDto) {
+    const current = await this.getInstitutionOrFail(institutionId);
     const { niveles: _niveles, ...rest } = dto;
     const merged = this.institutionRepo.merge(current, rest);
     const saved = await this.institutionRepo.save(merged);
-    await this.gradingConfigService.refresh();
+    if (dto.periodos?.length) {
+      await this.periodosAcademicosService.syncFromInstitution(saved);
+    }
+    await this.gradingConfigService.refresh(saved.id);
     return saved;
   }
 
-  findAllCampuses() {
-    return this.sedeRepo.find({ order: { id: 'ASC' } });
+  findAllCampuses(institutionId: number) {
+    return this.sedeRepo.find({
+      where: { institutionId },
+      order: { id: 'ASC' },
+    });
   }
 
   async findCampus(id: number) {
     return this.getCampusOrFail(id);
   }
 
-  createCampus(dto: CreateCampusDto) {
-    return this.ensureInstitution().then((institution) => {
-      const entity = this.sedeRepo.create({
-        ...dto,
-        institutionId: institution.id,
-      });
-      return this.sedeRepo.save(entity);
+  async createCampus(institutionId: number, dto: CreateCampusDto) {
+    await this.getInstitutionOrFail(institutionId);
+    const entity = this.sedeRepo.create({
+      ...dto,
+      institutionId,
     });
+    return this.sedeRepo.save(entity);
   }
 
   async updateCampus(id: number, dto: UpdateCampusDto) {
@@ -143,8 +165,8 @@ export class InstitutionService {
     return { deleted: true, id };
   }
 
-  async findAllEducationLevels(): Promise<NivelResponse[]> {
-    await this.ensureEducationLevels();
+  async findAllEducationLevels(institutionId: number): Promise<NivelResponse[]> {
+    await this.ensureEducationLevels(institutionId);
     const niveles = await this.queryEducationLevels();
     return niveles.map((nivel) => this.mapNivel(nivel));
   }
@@ -162,11 +184,11 @@ export class InstitutionService {
       .getMany();
   }
 
-  private async ensureEducationLevels(): Promise<void> {
+  private async ensureEducationLevels(institutionId: number): Promise<void> {
     const count = await this.nivelRepo.count();
     if (count > 0) return;
 
-    const institution = await this.ensureInstitution();
+    const institution = await this.getInstitutionOrFail(institutionId);
     const raw = (institution.niveles ?? []) as NivelEstructura[];
 
     const estructura = raw.length
@@ -339,11 +361,10 @@ export class InstitutionService {
     };
   }
 
-  private async ensureInstitution(): Promise<Institution> {
-    let institution = await this.institutionRepo.findOne({ where: {}, order: { id: 'ASC' } });
+  private async getInstitutionOrFail(institutionId: number): Promise<Institution> {
+    const institution = await this.institutionRepo.findOneBy({ id: institutionId });
     if (!institution) {
-      institution = this.institutionRepo.create({});
-      institution = await this.institutionRepo.save(institution);
+      throw new NotFoundException(`Institución ${institutionId} no encontrada`);
     }
     return institution;
   }

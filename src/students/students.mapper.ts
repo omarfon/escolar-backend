@@ -60,6 +60,13 @@ export interface ExpedienteResponse {
   asistenciaPct: number;
   conductaNota: string;
   documentos: ExpedienteDocumento[];
+  estadoDocumento: string;
+  sinDocumentoMotivo: string;
+  sinDocumentoSustento: string;
+  matriculaExcepcional: boolean;
+  excepcionalMotivo: string;
+  excepcionalSustento: string;
+  edadNormativaAlRegistro: number | null;
 }
 
 export interface SectionChangeCandidateResponse {
@@ -289,5 +296,12 @@ export function toExpedienteResponse(
       fechaEntrega: d.fechaEntrega,
       imagenUrl: d.imagenUrl || undefined,
     })),
+    estadoDocumento: student.estadoDocumento ?? 'regular',
+    sinDocumentoMotivo: student.sinDocumentoMotivo ?? '',
+    sinDocumentoSustento: student.sinDocumentoSustento ?? '',
+    matriculaExcepcional: student.matriculaExcepcional ?? false,
+    excepcionalMotivo: student.excepcionalMotivo ?? '',
+    excepcionalSustento: student.excepcionalSustento ?? '',
+    edadNormativaAlRegistro: student.edadNormativaAlRegistro ?? null,
   };
 }

@@ -7,15 +7,21 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Request } from 'express';
 import { TasksService } from './tasks.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { GradeTaskDto } from './dto/grade-task.dto';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
+import { RequireRole } from '../auth/decorators/require-role.decorator';
+import { RequestUser } from '../auth/interfaces/request-user.interface';
+
+type AuthRequest = Request & { user?: RequestUser };
 
 @Controller('tasks')
 @RequirePermiso('comunicados.ver')
@@ -48,6 +54,21 @@ export class TasksController {
       grado: grado || undefined,
       seccion: seccion || undefined,
     });
+  }
+
+  @Get('pending-review')
+  @RequirePermiso()
+  @RequireRole('DOCENTE')
+  findPendingReview(
+    @Req() req: AuthRequest,
+    @Query('anioEscolar') anioEscolar?: string,
+  ) {
+    const userId = Number(req.user?.id ?? 0);
+    return this.tasksService.findPendingReviewForUser(
+      userId,
+      req.user?.username,
+      anioEscolar ? Number(anioEscolar) : undefined,
+    );
   }
 
   @Get('entregas')

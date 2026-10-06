@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: Escolar API — Auditoría de accesos
+  version: 1.0.0
+  description: |
+    Consulta append-only de eventos de auditoría. Requiere permiso `admin.reportes`.
+    Los registros no pueden crearse ni modificarse vía API pública.
+
+paths:
+  /audit-logs/context:
+    get:
+      summary: Contexto institucional y política de retención
+      tags: [AuditLogs]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Contexto para pantalla de bitácora
+        '403':
+          description: Sin permiso admin.reportes
+
+  /audit-logs:
+    get:
+      summary: Listar eventos de auditoría (paginado)
+      tags: [AuditLogs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tipo
+          in: query
+          schema:
+            type: string
+            enum: [accesos, todos]
+          description: accesos filtra login/logout
+        - name: modulo
+          in: query
+          schema: { type: string }
+        - name: accion
+          in: query
+          schema:
+            type: string
+            enum: [login, logout, crear, actualizar, eliminar, exportar, configurar, consultar]
+        - name: resultado
+          in: query
+          schema:
+            type: string
+            enum: [success, error]
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Lista paginada con resumen
+        '403':
+          description: Sin permiso
+
+    post:
+      summary: Creación manual bloqueada (append-only)
+      tags: [AuditLogs]
+      security:
+        - bearerAuth: []
+      responses:
+        '403':
+          description: Registros inmutables vía API
+
+  /audit-logs/export:
+    get:
+      summary: Exportar auditoría a CSV (máx. 5000 filas)
+      tags: [AuditLogs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tipo
+          in: query
+          schema:
+            type: string
+            enum: [accesos, todos]
+      responses:
+        '200':
+          description: Archivo CSV UTF-8
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /audit-logs/{id}:
+    get:
+      summary: Detalle de un registro
+      tags: [AuditLogs]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Registro de auditoría
+        '404':
+          description: No encontrado
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

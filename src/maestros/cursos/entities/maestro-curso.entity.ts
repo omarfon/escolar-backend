@@ -5,6 +5,9 @@ export class MaestroCurso {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int' })
+  institutionId: number;
+
   @Column({ length: 120 })
   nombre: string;
 

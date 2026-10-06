@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { TenantInstitution } from '../auth/decorators/tenant-institution.decorator';
 import { InstitutionService } from './institution.service';
 import { CreateCampusDto } from './dto/create-campus.dto';
 import { UpdateCampusDto } from './dto/update-campus.dto';
@@ -23,13 +24,16 @@ export class InstitutionController {
   constructor(private readonly institutionService: InstitutionService) {}
 
   @Get()
-  getConfig() {
-    return this.institutionService.getConfig();
+  getConfig(@TenantInstitution() institutionId: number) {
+    return this.institutionService.getConfig(institutionId);
   }
 
   @Patch()
-  updateInstitution(@Body() dto: UpdateInstitutionDto) {
-    return this.institutionService.updateInstitution(dto);
+  updateInstitution(
+    @TenantInstitution() institutionId: number,
+    @Body() dto: UpdateInstitutionDto,
+  ) {
+    return this.institutionService.updateInstitution(institutionId, dto);
   }
 
   @Get('education-levels')
@@ -42,8 +46,8 @@ export class InstitutionController {
     'estudiantes.ver',
     'comunicados.ver',
   )
-  findAllEducationLevels() {
-    return this.institutionService.findAllEducationLevels();
+  findAllEducationLevels(@TenantInstitution() institutionId: number) {
+    return this.institutionService.findAllEducationLevels(institutionId);
   }
 
   @Post('education-levels')
@@ -92,8 +96,8 @@ export class InstitutionController {
   }
 
   @Get('campuses')
-  findAllCampuses() {
-    return this.institutionService.findAllCampuses();
+  findAllCampuses(@TenantInstitution() institutionId: number) {
+    return this.institutionService.findAllCampuses(institutionId);
   }
 
   @Get('campuses/:id')
@@ -102,8 +106,11 @@ export class InstitutionController {
   }
 
   @Post('campuses')
-  createCampus(@Body() dto: CreateCampusDto) {
-    return this.institutionService.createCampus(dto);
+  createCampus(
+    @TenantInstitution() institutionId: number,
+    @Body() dto: CreateCampusDto,
+  ) {
+    return this.institutionService.createCampus(institutionId, dto);
   }
 
   @Patch('campuses/:id')

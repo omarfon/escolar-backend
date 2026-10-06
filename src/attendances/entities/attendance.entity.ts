@@ -8,6 +8,9 @@ export class Attendance {
   @Column()
   studentId: number;
 
+  @Column({ type: 'int', nullable: true })
+  institutionId: number | null;
+
   @Column({ type: 'date' })
   fecha: string;
 

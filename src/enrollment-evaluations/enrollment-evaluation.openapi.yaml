@@ -1,0 +1,117 @@
+openapi: 3.0.3
+info:
+  title: Evaluaciones de matrícula
+  version: '1.0'
+  description: Evaluaciones de admisión vinculadas a lista de espera o estudiante (SIAGIE — Gestión de Matrícula).
+paths:
+  /api/v1/enrollment-evaluations/context:
+    get:
+      summary: Contexto institucional y catálogos
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Contexto
+        '403':
+          description: Sin permiso
+  /api/v1/enrollment-evaluations:
+    get:
+      summary: Listado paginado de evaluaciones
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: waitlistEntryId
+          schema: { type: integer }
+        - in: query
+          name: studentId
+          schema: { type: integer }
+        - in: query
+          name: anioEscolar
+          schema: { type: integer }
+        - in: query
+          name: resultado
+          schema: { type: string }
+        - in: query
+          name: tipoEvaluacion
+          schema: { type: string }
+        - in: query
+          name: busqueda
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: pageSize
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Listado
+    post:
+      summary: Registrar evaluación (idempotente)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tipoEvaluacion, fechaEvaluacion, resultado, resolucion]
+              properties:
+                waitlistEntryId: { type: integer }
+                studentId: { type: integer }
+                tipoEvaluacion: { type: string }
+                fechaEvaluacion: { type: string, format: date }
+                resultado: { type: string }
+                puntaje: { type: number }
+                observaciones: { type: string }
+                resolucion: { type: string }
+      responses:
+        '201':
+          description: Evaluación registrada
+        '400':
+          description: Validación
+        '403':
+          description: Sin permiso
+        '409':
+          description: Duplicado
+  /api/v1/enrollment-evaluations/waitlist/{id}/eligibility:
+    get:
+      summary: Elegibilidad de candidato en lista de espera
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Elegibilidad
+  /api/v1/enrollment-evaluations/students/{id}/eligibility:
+    get:
+      summary: Elegibilidad de estudiante
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Elegibilidad
+  /api/v1/enrollment-evaluations/{id}:
+    get:
+      summary: Detalle de evaluación
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Detalle
+        '404':
+          description: No encontrado

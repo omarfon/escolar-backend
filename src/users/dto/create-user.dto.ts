@@ -1,13 +1,20 @@
 import {
+  IsArray,
   IsEmail,
   IsIn,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { RoleAssignmentItemDto } from './user-role-assignment.dto';
 
-const ROLES = ['ADMIN', 'DIRECTOR', 'DOCENTE', 'SECRETARIA', 'TESORERO', 'PADRE', 'ESTUDIANTE', 'BIBLIOTECARIO'] as const;
+const ROLES = [
+  'ADMIN', 'DIRECTOR', 'DOCENTE', 'SECRETARIA', 'TESORERO',
+  'PADRE', 'ESTUDIANTE', 'BIBLIOTECARIO', 'UGEL', 'DRE', 'MINEDU',
+] as const;
 const ESTADOS = ['activo', 'inactivo', 'bloqueado'] as const;
 
 export class CreateUserDto {
@@ -22,4 +29,15 @@ export class CreateUserDto {
   @IsOptional() @IsIn(ESTADOS) estado?: (typeof ESTADOS)[number];
   @IsOptional() @IsString() @MaxLength(120) cargo?: string;
   @IsString() @MinLength(8) @MaxLength(100) password: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RoleAssignmentItemDto)
+  roleAssignments?: RoleAssignmentItemDto[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  roleAssignmentsMotivo?: string;
 }

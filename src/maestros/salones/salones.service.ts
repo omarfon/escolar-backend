@@ -17,6 +17,16 @@ import {
   isIngresanteGrade,
   normalizeGradoMatricula,
 } from './salones.util';
+import { CatalogCacheService } from '../../common/catalog-cache.service';
+import { MaestroAnioEscolar } from '../anios-escolares/entities/maestro-anio-escolar.entity';
+import {
+  applyInstitutionIdWhere,
+  assertMaestroBelongsToInstitution,
+  filterAniosEscolaresPorInstitucion,
+  MaestrosAuthRequest,
+  requireMaestrosInstitutionId,
+  resolveMaestrosAniosEscolares,
+} from '../common/maestros-tenant.util';
 
 export interface SalonResponse {
   id: number;
@@ -61,21 +71,62 @@ export class SalonesService {
     private readonly gradoRepo: Repository<GradeLevel>,
     @InjectRepository(GradeSection)
     private readonly seccionRepo: Repository<GradeSection>,
+    private readonly catalogCache: CatalogCacheService,
+    @InjectRepository(MaestroAnioEscolar)
+    private readonly anioEscolarRepo: Repository<MaestroAnioEscolar>,
   ) {}
 
-  async findAll(query?: {
-    anioEscolar?: number;
-    nivel?: string;
-    grado?: string;
-    activo?: boolean;
-  }): Promise<SalonResponse[]> {
+  async findAll(
+    query?: {
+      anioEscolar?: number;
+      nivel?: string;
+      grado?: string;
+      activo?: boolean;
+    },
+    req?: MaestrosAuthRequest,
+  ): Promise<SalonResponse[]> {
+    const scope = req
+      ? await resolveMaestrosAniosEscolares(req, this.anioEscolarRepo)
+      : null;
+    const institutionId = scope?.institutionId;
+    const aniosInstitucion = scope?.anios;
+    if (req && !scope) return [];
+
+    const cacheKey = `salones:list:${JSON.stringify({ ...query, institutionId, aniosInstitucion })}`;
+    return this.catalogCache.wrap(cacheKey, () =>
+      this.findAllUncached(query, institutionId, aniosInstitucion),
+    );
+  }
+
+  private async findAllUncached(
+    query?: {
+      anioEscolar?: number;
+      nivel?: string;
+      grado?: string;
+      activo?: boolean;
+    },
+    institutionId?: number,
+    aniosInstitucion?: number[],
+  ): Promise<SalonResponse[]> {
+    const aniosFiltrados =
+      aniosInstitucion !== undefined
+        ? filterAniosEscolaresPorInstitucion(aniosInstitucion, query?.anioEscolar)
+        : undefined;
+    if (aniosFiltrados !== undefined && !aniosFiltrados.length) return [];
+
     const qb = this.salonRepo
       .createQueryBuilder('s')
       .orderBy('s.nivel', 'ASC')
       .addOrderBy('s.grado', 'ASC')
       .addOrderBy('s.seccion', 'ASC');
 
-    if (query?.anioEscolar) {
+    applyInstitutionIdWhere(qb, 's', institutionId);
+
+    if (aniosFiltrados?.length) {
+      qb.andWhere('s.anioEscolar IN (:...aniosInstitucion)', {
+        aniosInstitucion: aniosFiltrados,
+      });
+    } else if (query?.anioEscolar) {
       qb.andWhere('s.anioEscolar = :anio', { anio: query.anioEscolar });
     }
     if (query?.nivel) qb.andWhere('s.nivel = :nivel', { nivel: query.nivel });
@@ -94,20 +145,29 @@ export class SalonesService {
     return rows.map((r) => this.toSalonResponse(r));
   }
 
-  async findVacancies(query?: {
-    anioEscolar?: number;
-    nivel?: string;
-    grado?: string;
-  }): Promise<VacancyResponse[]> {
+  async findVacancies(
+    query?: {
+      anioEscolar?: number;
+      nivel?: string;
+      grado?: string;
+    },
+    req?: MaestrosAuthRequest,
+  ): Promise<VacancyResponse[]> {
     const anio = query?.anioEscolar ?? new Date().getFullYear();
-    const salones = await this.findAll({
-      anioEscolar: anio,
-      nivel: query?.nivel,
-      grado: query?.grado,
-      activo: true,
-    });
+    const salones = await this.findAll(
+      {
+        anioEscolar: anio,
+        nivel: query?.nivel,
+        grado: query?.grado,
+        activo: true,
+      },
+      req,
+    );
 
-    const studentCounts = await this.countStudentsBySection();
+    const scope = req
+      ? await resolveMaestrosAniosEscolares(req, this.anioEscolarRepo)
+      : null;
+    const studentCounts = await this.countStudentsBySection(scope?.institutionId);
 
     return salones.map((salon) => {
       const key = this.sectionKey(salon.nivel, salon.grado, salon.seccion);
@@ -136,24 +196,37 @@ export class SalonesService {
     grado: string,
     anioEscolar?: number,
   ): Promise<SectionOccupancyItem[]> {
+    return this.getSectionOccupancyForInstitution(undefined, nivel, grado, anioEscolar);
+  }
+
+  async getSectionOccupancyForInstitution(
+    institutionId: number | undefined,
+    nivel: string,
+    grado: string,
+    anioEscolar?: number,
+  ): Promise<SectionOccupancyItem[]> {
     const gradoNorm = normalizeGradoMatricula(grado);
     const anio = anioEscolar ?? new Date().getFullYear();
-    const vacancies = await this.findVacancies({
-      anioEscolar: anio,
-      nivel,
-      grado: gradoNorm,
-    });
-
+    const salones = await this.findAllUncached(
+      { anioEscolar: anio, nivel, grado: gradoNorm, activo: true },
+      institutionId,
+    );
+    const studentCounts = await this.countStudentsBySection(institutionId);
     const esIngresante = isIngresanteGrade(nivel, gradoNorm);
 
-    return vacancies
-      .map((v) => ({
-        seccion: v.seccion.trim().toUpperCase(),
-        matriculados: v.matriculados,
-        capacidad: v.aforo,
-        disponibles: v.disponibles,
-        esIngresante,
-      }))
+    return salones
+      .map((salon) => {
+        const key = this.sectionKey(salon.nivel, salon.grado, salon.seccion);
+        const matriculados = studentCounts.get(key) ?? 0;
+        const disponibles = Math.max(0, salon.aforo - matriculados);
+        return {
+          seccion: salon.seccion.trim().toUpperCase(),
+          matriculados,
+          capacidad: salon.aforo,
+          disponibles,
+          esIngresante,
+        };
+      })
       .sort((a, b) => a.seccion.localeCompare(b.seccion));
   }
 
@@ -187,11 +260,13 @@ export class SalonesService {
     }
   }
 
-  async create(dto: CreateSalonDto): Promise<SalonResponse> {
+  async create(dto: CreateSalonDto, req: MaestrosAuthRequest): Promise<SalonResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const grado = normalizeGradoMatricula(dto.grado);
     const seccion = dto.seccion.trim().toUpperCase();
     const existing = await this.salonRepo.findOne({
       where: {
+        institutionId,
         anioEscolar: dto.anioEscolar,
         nivel: dto.nivel,
         grado,
@@ -204,6 +279,7 @@ export class SalonesService {
 
     const saved = await this.salonRepo.save(
       this.salonRepo.create({
+        institutionId,
         anioEscolar: dto.anioEscolar,
         nivel: dto.nivel,
         grado,
@@ -212,26 +288,42 @@ export class SalonesService {
         activo: dto.activo ?? true,
       }),
     );
+    this.catalogCache.invalidate('salones:');
     return this.toSalonResponse(saved);
   }
 
-  async update(id: number, dto: UpdateSalonDto): Promise<SalonResponse> {
+  async update(
+    id: number,
+    dto: UpdateSalonDto,
+    req: MaestrosAuthRequest,
+  ): Promise<SalonResponse> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const salon = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(salon, institutionId);
     if (dto.aforo !== undefined) salon.aforo = dto.aforo;
     if (dto.activo !== undefined) salon.activo = dto.activo;
     const saved = await this.salonRepo.save(salon);
+    this.catalogCache.invalidate('salones:');
     return this.toSalonResponse(saved);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean; id: number }> {
+  async remove(
+    id: number,
+    req: MaestrosAuthRequest,
+  ): Promise<{ deleted: boolean; id: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const salon = await this.getOrFail(id);
+    assertMaestroBelongsToInstitution(salon, institutionId);
     await this.salonRepo.remove(salon);
+    this.catalogCache.invalidate('salones:');
     return { deleted: true, id };
   }
 
   async syncFromInstitution(
     dto: SyncSalonesDto,
+    req: MaestrosAuthRequest,
   ): Promise<{ created: number; skipped: number }> {
+    const institutionId = requireMaestrosInstitutionId(req);
     const niveles = await this.nivelRepo.find({
       where: { activo: true },
       order: { orden: 'ASC' },
@@ -254,6 +346,7 @@ export class SalonesService {
           const seccionNorm = seccion.nombre.trim().toUpperCase();
           const exists = await this.salonRepo.findOne({
             where: {
+              institutionId,
               anioEscolar: dto.anioEscolar,
               nivel: nivel.nombre,
               grado: gradoMat,
@@ -266,6 +359,7 @@ export class SalonesService {
           }
           await this.salonRepo.save(
             this.salonRepo.create({
+              institutionId,
               anioEscolar: dto.anioEscolar,
               nivel: nivel.nombre,
               grado: gradoMat,
@@ -279,13 +373,21 @@ export class SalonesService {
       }
     }
 
+    this.catalogCache.invalidate('salones:');
     return { created, skipped };
   }
 
-  private async countStudentsBySection(): Promise<Map<string, number>> {
-    const students = await this.studentRepo.find({
-      where: { activo: true, estadoMatricula: 'activo' },
-    });
+  private async countStudentsBySection(
+    institutionId?: number,
+  ): Promise<Map<string, number>> {
+    const qb = this.studentRepo
+      .createQueryBuilder('s')
+      .where('s.activo = :activo', { activo: true })
+      .andWhere("s.estadoMatricula = 'activo'");
+    if (institutionId !== undefined && institutionId > 0) {
+      qb.andWhere('s.institutionId = :institutionId', { institutionId });
+    }
+    const students = await qb.getMany();
     const map = new Map<string, number>();
     for (const s of students) {
       const key = this.sectionKey(

@@ -1,0 +1,84 @@
+openapi: 3.0.3
+info:
+  title: Enrollment Reports API
+  version: 1.0.0
+  description: Reportes de matrícula global por IE con alcance territorial.
+paths:
+  /enrollment-reports/context:
+    get:
+      summary: Contexto institucional y filtros disponibles
+      tags: [EnrollmentReports]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: dre
+          schema: { type: string }
+        - in: query
+          name: ugel
+          schema: { type: string }
+      responses:
+        '200':
+          description: Contexto del reporte
+  /enrollment-reports:
+    get:
+      summary: Consulta paginada de reporte de matrícula
+      tags: [EnrollmentReports]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: tipo
+          required: true
+          schema:
+            type: string
+            enum: [matricula_global, matricula_resumen]
+        - in: query
+          name: anio
+          schema: { type: integer }
+        - in: query
+          name: periodo
+          schema: { type: integer, minimum: 1, maximum: 4 }
+        - in: query
+          name: nivel
+          schema: { type: string }
+        - in: query
+          name: grado
+          schema: { type: string }
+        - in: query
+          name: seccion
+          schema: { type: string }
+        - in: query
+          name: estadoMatricula
+          schema:
+            type: string
+            enum: [activo, inactivo, retirado]
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        '200':
+          description: Reporte paginado con meta, columns, items y pagination
+  /enrollment-reports/export:
+    get:
+      summary: Exportación síncrona CSV/XLSX/PDF
+      tags: [EnrollmentReports]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Archivo exportado
+  /enrollment-reports/jobs:
+    post:
+      summary: Encolar exportación asíncrona (>500 filas)
+      tags: [EnrollmentReports]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Job creado o indicación de exportación síncrona
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

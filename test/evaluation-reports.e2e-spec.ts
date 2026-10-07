@@ -55,6 +55,7 @@ describe('Evaluation reports (e2e)', () => {
         expect(res.body.institucion).toBeDefined();
         expect(res.body.permisoConsulta).toBe('evaluacion.reportes');
         expect(res.body.tiposDisponibles).toContain('promedios');
+        expect(res.body.tiposDisponibles).toContain('avance_evaluacion');
       });
   });
 
@@ -72,6 +73,29 @@ describe('Evaluation reports (e2e)', () => {
       .get('/api/v1/evaluation-reports?tipo=promedios')
       .set('Authorization', `Bearer ${token}`)
       .expect(400);
+  });
+
+  it('GET /evaluation-reports acepta institutionId y _tenant del interceptor tenant', async () => {
+    const token = await login('docente');
+    const ctxRes = await request(app.getHttpServer())
+      .get('/api/v1/grades/registry/contexts?bimestre=2')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const contexts = ctxRes.body.contexts as Array<{
+      nivel: string;
+      grado: string;
+      seccion: string;
+    }>;
+    if (!contexts.length) return;
+
+    const ctx = contexts[0];
+    return request(app.getHttpServer())
+      .get(
+        `/api/v1/evaluation-reports?tipo=promedios&nivel=${encodeURIComponent(ctx.nivel)}&grado=${encodeURIComponent(ctx.grado)}&seccion=${encodeURIComponent(ctx.seccion)}&institutionId=1&_tenant=abc123`,
+      )
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
   });
 
   it('GET /evaluation-reports responde reporte paginado de promedios', async () => {
@@ -100,6 +124,35 @@ describe('Evaluation reports (e2e)', () => {
         expect(res.body.meta.fuente).toBe('tabla_promedios');
         expect(res.body.pagination).toBeDefined();
         expect(Array.isArray(res.body.items)).toBe(true);
+      });
+  });
+
+  it('GET /evaluation-reports avance_evaluacion por aula', async () => {
+    const token = await login('docente');
+    const ctxRes = await request(app.getHttpServer())
+      .get('/api/v1/grades/registry/contexts?bimestre=2')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const contexts = ctxRes.body.contexts as Array<{
+      nivel: string;
+      grado: string;
+      seccion: string;
+    }>;
+    if (!contexts.length) return;
+
+    const ctx = contexts[0];
+    return request(app.getHttpServer())
+      .get(
+        `/api/v1/evaluation-reports?tipo=avance_evaluacion&bimestre=2&nivel=${encodeURIComponent(ctx.nivel)}&grado=${encodeURIComponent(ctx.grado)}&seccion=${encodeURIComponent(ctx.seccion)}`,
+      )
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect((res) => {
+        expect(res.body.meta.tipo).toBe('avance_evaluacion');
+        expect(res.body.meta.fuente).toBe('agregado_avance_evaluacion');
+        expect(Array.isArray(res.body.items)).toBe(true);
+        expect(res.body.meta.totales).toBeDefined();
       });
   });
 

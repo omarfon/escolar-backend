@@ -5,8 +5,19 @@ export interface ReportColumn {
   label: string;
 }
 
+export const REPORT_ROW_GROUP_HEADER = 'encabezado';
+export const REPORT_ROW_DETAIL = 'detalle';
+
 export interface ReportRow {
-  [key: string]: string | number | null;
+  /** encabezado = fila de título de alumno; detalle = fila de datos (solo reporte notas). */
+  _tipoFila?: typeof REPORT_ROW_GROUP_HEADER | typeof REPORT_ROW_DETAIL | string;
+  /** Texto del encabezado de grupo (nombre del estudiante). */
+  tituloGrupo?: string;
+  [key: string]: string | number | null | undefined;
+}
+
+export function isGroupHeaderRow(row: ReportRow): boolean {
+  return row._tipoFila === REPORT_ROW_GROUP_HEADER;
 }
 
 export interface ReportPagination {
@@ -38,7 +49,7 @@ export interface ReportMeta {
   fechaCorte: string;
   anioEscolar: number;
   bimestre: number | null;
-  tipo: EvaluationReportType;
+  tipo: EvaluationReportType | string;
   fuente: string;
   parametros: Record<string, unknown>;
   institucion: ReportMetaInstitucion;
@@ -103,9 +114,13 @@ export function csvCell(value: string | number | null | undefined): string {
 
 export function buildCsv(columns: ReportColumn[], rows: ReportRow[]): string {
   const header = columns.map((c) => csvCell(c.label)).join(',');
-  const body = rows.map((row) =>
-    columns.map((c) => csvCell(row[c.key] as string | number | null)).join(','),
-  );
+  const body = rows.map((row) => {
+    if (isGroupHeaderRow(row)) {
+      const title = row.tituloGrupo ?? row.estudiante ?? 'Estudiante';
+      return csvCell(`— ${title} —`);
+    }
+    return columns.map((c) => csvCell(row[c.key] as string | number | null)).join(',');
+  });
   return [header, ...body].join('\r\n');
 }
 

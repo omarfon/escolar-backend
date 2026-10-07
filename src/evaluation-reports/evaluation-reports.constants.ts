@@ -3,6 +3,7 @@ export const EVALUATION_REPORT_TYPES = [
   'notas',
   'competencias',
   'diagnostico',
+  'avance_evaluacion',
 ] as const;
 
 export type EvaluationReportType = (typeof EVALUATION_REPORT_TYPES)[number];
@@ -35,4 +36,5 @@ export const REPORT_SOURCES: Record<EvaluationReportType, string> = {
   notas: 'tabla_grades',
   competencias: 'tabla_competency_evaluations',
   diagnostico: 'tabla_diagnostic_evaluations',
+  avance_evaluacion: 'agregado_avance_evaluacion',
 };

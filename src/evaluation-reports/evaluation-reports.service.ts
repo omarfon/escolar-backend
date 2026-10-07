@@ -10,7 +10,13 @@ import { Grade } from '../grades/entities/grade.entity';
 import { GradesService } from '../grades/grades.service';
 import { CompetencyEvaluation } from '../competency-evaluations/entities/competency-evaluation.entity';
 import { DiagnosticEvaluation } from '../diagnostic-evaluations/entities/diagnostic-evaluation.entity';
+import { CurriculumCompetencia } from '../curricula/entities/curriculum-competencia.entity';
 import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
+import { gradosCoinciden } from '../competency-evaluations/competency-evaluations.util';
+import {
+  computeGlobalAvancePct,
+  computeNotasAvanceMetrics,
+} from './evaluation-reports-avance.util';
 import { PeriodosAcademicosMaestrosService } from '../maestros/periodos-academicos/periodos-academicos.service';
 import { PromediosService } from '../promedios/promedios.service';
 import { StudentsService } from '../students/students.service';
@@ -29,6 +35,8 @@ import {
 import {
   mergeTotales,
   paginateRows,
+  REPORT_ROW_DETAIL,
+  REPORT_ROW_GROUP_HEADER,
   type EvaluationReportResponse,
   type ReportColumn,
   type ReportMeta,
@@ -83,6 +91,8 @@ export class EvaluationReportsService {
     private readonly diagnosticRepo: Repository<DiagnosticEvaluation>,
     @InjectRepository(CurriculumSubject)
     private readonly subjectRepo: Repository<CurriculumSubject>,
+    @InjectRepository(CurriculumCompetencia)
+    private readonly competenciaRepo: Repository<CurriculumCompetencia>,
     private readonly gradesService: GradesService,
     private readonly promediosService: PromediosService,
     private readonly studentsService: StudentsService,
@@ -147,7 +157,13 @@ export class EvaluationReportsService {
       },
       bimestreActual,
       anioEscolar,
-      tiposDisponibles: ['promedios', 'notas', 'competencias', 'diagnostico'],
+      tiposDisponibles: [
+        'promedios',
+        'notas',
+        'competencias',
+        'diagnostico',
+        'avance_evaluacion',
+      ],
       permisoConsulta: 'evaluacion.reportes',
       permisoExportacion: 'evaluacion.exportar',
       filtros: {
@@ -258,6 +274,8 @@ export class EvaluationReportsService {
         return this.buildCompetenciasReport(query, institutionId, scope);
       case 'diagnostico':
         return this.buildDiagnosticoReport(query, institutionId, scope);
+      case 'avance_evaluacion':
+        return this.buildAvanceReport(query, institutionId, scope);
       default:
         throw new BadRequestException('Tipo de reporte no soportado');
     }
@@ -321,7 +339,6 @@ export class EvaluationReportsService {
   ): Promise<{ meta: ReportMeta; columns: ReportColumn[]; rows: ReportRow[] }> {
     const meta = await this.buildMeta(query, institutionId, 'notas', scope);
     const columns: ReportColumn[] = [
-      { key: 'estudiante', label: 'Estudiante' },
       { key: 'curso', label: 'Curso' },
       { key: 'componente', label: 'Componente' },
       { key: 'bimestre', label: 'Bimestre' },
@@ -348,34 +365,66 @@ export class EvaluationReportsService {
     if (query.bimestre) where.bimestre = query.bimestre;
     if (query.curso) where.curso = query.curso;
 
-    const grades = await this.gradeRepo.find({ where, order: { curso: 'ASC' } });
+    const grades = await this.gradeRepo.find({
+      where,
+      order: { studentId: 'ASC', curso: 'ASC', bimestre: 'ASC' },
+    });
 
-    const rows: ReportRow[] = [];
+    const detailsByStudent = new Map<number, ReportRow[]>();
     for (const g of grades) {
       const st = studentMap.get(g.studentId);
       if (!st) continue;
-      const row: ReportRow = {
-        estudiante: `${st.apellido} ${st.nombre}`.trim(),
+      const nombre = `${st.apellido} ${st.nombre}`.trim();
+      const detail: ReportRow = {
+        _tipoFila: REPORT_ROW_DETAIL,
         curso: g.curso,
         componente: g.componenteCodigo || g.tipo,
         bimestre: g.bimestre,
         nota: g.nota,
         fecha: g.fechaEvaluacion,
       };
-      if (matchSearch(query.busqueda, row.estudiante, row.curso, row.componente)) {
-        rows.push(row);
+      if (!matchSearch(query.busqueda, nombre, detail.curso, detail.componente)) {
+        continue;
       }
+      const list = detailsByStudent.get(g.studentId) ?? [];
+      list.push(detail);
+      detailsByStudent.set(g.studentId, list);
+    }
+
+    const sortedStudentIds = [...detailsByStudent.keys()].sort((a, b) => {
+      const sa = studentMap.get(a);
+      const sb = studentMap.get(b);
+      const na = sa ? `${sa.apellido} ${sa.nombre}`.trim() : '';
+      const nb = sb ? `${sb.apellido} ${sb.nombre}`.trim() : '';
+      return na.localeCompare(nb, 'es');
+    });
+
+    const rows: ReportRow[] = [];
+    const detailRows: ReportRow[] = [];
+    for (const studentId of sortedStudentIds) {
+      const st = studentMap.get(studentId);
+      const details = detailsByStudent.get(studentId) ?? [];
+      if (!st || !details.length) continue;
+      const nombre = `${st.apellido} ${st.nombre}`.trim();
+      rows.push({
+        _tipoFila: REPORT_ROW_GROUP_HEADER,
+        tituloGrupo: nombre,
+      });
+      rows.push(...details);
+      detailRows.push(...details);
     }
 
     meta.totales = {
-      totalRegistros: rows.length,
+      totalRegistros: detailRows.length,
       promedioNotas:
-        rows.length > 0
+        detailRows.length > 0
           ? Math.round(
-              (rows.reduce((s, r) => s + Number(r.nota ?? 0), 0) / rows.length) * 10,
+              (detailRows.reduce((s, r) => s + Number(r.nota ?? 0), 0) /
+                detailRows.length) *
+                10,
             ) / 10
           : null,
-      alumnosUnicos: new Set(grades.map((g) => g.studentId)).size,
+      alumnosUnicos: sortedStudentIds.length,
     };
 
     return { meta, columns, rows };
@@ -450,6 +499,213 @@ export class EvaluationReportsService {
     };
 
     return { meta, columns, rows };
+  }
+
+  private async buildAvanceReport(
+    query: NormalizedReportQuery,
+    institutionId: number,
+    scope: ReportScope,
+  ): Promise<{ meta: ReportMeta; columns: ReportColumn[]; rows: ReportRow[] }> {
+    const meta = await this.buildMeta(
+      query,
+      institutionId,
+      'avance_evaluacion',
+      scope,
+    );
+    const bimestreActual = await this.periodosService.resolveBimestreActual();
+    const bimestre = query.bimestre ?? bimestreActual;
+
+    if (bimestre > bimestreActual) {
+      throw new BadRequestException(
+        `El bimestre ${bimestre} aún no está habilitado. Periodo actual: ${bimestreActual}° bimestre.`,
+      );
+    }
+
+    meta.bimestre = bimestre;
+
+    const columns: ReportColumn[] = [
+      { key: 'curso', label: 'Curso' },
+      { key: 'bimestre', label: 'Bimestre' },
+      { key: 'alumnos', label: 'Alumnos' },
+      { key: 'componentesEsperados', label: 'Componentes esperados' },
+      { key: 'componentesRegistrados', label: 'Componentes registrados' },
+      { key: 'avanceNotasPct', label: 'Avance notas (%)' },
+      { key: 'alumnosCompletos', label: 'Alumnos completos' },
+      { key: 'alumnosPendientes', label: 'Alumnos pendientes' },
+      { key: 'actaCerrada', label: 'Acta cerrada' },
+    ];
+
+    const contexts = (
+      await this.gradesService.listRegistryContexts(bimestre, institutionId)
+    ).contexts;
+    const aulaCtx = contexts.find(
+      (c) =>
+        c.nivel.trim() === query.nivel!.trim() &&
+        c.grado.trim() === query.grado!.trim() &&
+        c.seccion.trim().toUpperCase() === query.seccion!.trim().toUpperCase(),
+    );
+
+    if (!aulaCtx) {
+      meta.totales = {
+        totalCursos: 0,
+        avanceGlobalPct: null,
+      };
+      return { meta, columns, rows: [] };
+    }
+
+    let cursos = aulaCtx.cursos.map((c) => c.nombre);
+    if (query.curso) {
+      const cursoFilter = query.curso.toLowerCase();
+      cursos = cursos.filter((nombre) =>
+        nombre.toLowerCase().includes(cursoFilter),
+      );
+    }
+
+    const rows: ReportRow[] = [];
+    let sumEsperado = 0;
+    let sumRegistrado = 0;
+    let sumAlumnosCompletos = 0;
+    let sumAlumnosPendientes = 0;
+    let alumnosAula = 0;
+
+    for (const curso of cursos) {
+      const registry = await this.gradesService.getRegistry({
+        nivel: query.nivel!,
+        grado: query.grado!,
+        seccion: query.seccion!,
+        curso,
+        bimestre,
+        institutionId,
+      });
+
+      const componentesPorAlumno = registry.formula.componentes.length;
+      alumnosAula = registry.alumnos.length;
+
+      const avanceAlumnos = registry.alumnos.map((alumno) => {
+        let registrados = 0;
+        for (const comp of registry.formula.componentes) {
+          const nota = alumno.componentes[comp.codigo]?.nota;
+          if (nota !== null && nota !== undefined) registrados++;
+        }
+        return { componentesRegistrados: registrados };
+      });
+
+      const metrics = computeNotasAvanceMetrics(
+        avanceAlumnos,
+        componentesPorAlumno,
+      );
+
+      const row: ReportRow = {
+        curso,
+        bimestre,
+        alumnos: alumnosAula,
+        componentesEsperados: metrics.componentesEsperados,
+        componentesRegistrados: metrics.componentesRegistrados,
+        avanceNotasPct: metrics.avancePct,
+        alumnosCompletos: metrics.alumnosCompletos,
+        alumnosPendientes: metrics.alumnosPendientes,
+        actaCerrada: registry.actaCerrada ? 'Sí' : 'No',
+      };
+
+      if (matchSearch(query.busqueda, row.curso)) {
+        rows.push(row);
+      }
+
+      sumEsperado += metrics.componentesEsperados;
+      sumRegistrado += metrics.componentesRegistrados;
+      sumAlumnosCompletos += metrics.alumnosCompletos;
+      sumAlumnosPendientes += metrics.alumnosPendientes;
+    }
+
+    const anio = query.anio ?? meta.anioEscolar;
+    const students = listStudentsForAula(
+      await this.studentsService.findAll(institutionId),
+      query.nivel!,
+      query.grado!,
+      query.seccion!,
+    );
+    const studentIds = students.map((s) => s.id);
+
+    const competenciasEsperadas = await this.countCompetenciasEsperadas(
+      query.nivel!,
+      query.grado!,
+    );
+    const competenciasRegistradas =
+      studentIds.length > 0
+        ? await this.competencyRepo.count({
+            where: {
+              studentId: In(studentIds),
+              institutionId,
+              anio,
+              bimestre,
+            },
+          })
+        : 0;
+
+    const diagnosticosEsperados = cursos.length * studentIds.length;
+    const diagnosticosRegistrados =
+      studentIds.length > 0
+        ? await this.diagnosticRepo.count({
+            where: {
+              studentId: In(studentIds),
+              institutionId,
+              anio,
+              ...(query.curso ? { curso: query.curso } : {}),
+            },
+          })
+        : 0;
+
+    const slotsCompetenciasEsperados =
+      studentIds.length * competenciasEsperadas;
+    const avanceCompetenciasPct = computeGlobalAvancePct(
+      competenciasRegistradas,
+      slotsCompetenciasEsperados,
+    );
+    const avanceDiagnosticosPct = computeGlobalAvancePct(
+      diagnosticosRegistrados,
+      diagnosticosEsperados,
+    );
+
+    meta.totales = {
+      totalCursos: rows.length,
+      totalAlumnos: alumnosAula,
+      componentesEsperados: sumEsperado,
+      componentesRegistrados: sumRegistrado,
+      avanceGlobalPct: computeGlobalAvancePct(sumRegistrado, sumEsperado),
+      alumnosCompletos: sumAlumnosCompletos,
+      alumnosPendientes: sumAlumnosPendientes,
+      competenciasEsperadas: slotsCompetenciasEsperados,
+      competenciasRegistradas,
+      avanceCompetenciasPct,
+      diagnosticosEsperados,
+      diagnosticosRegistrados,
+      avanceDiagnosticosPct,
+    };
+
+    return { meta, columns, rows };
+  }
+
+  private async countCompetenciasEsperadas(
+    nivel: string,
+    grado: string,
+  ): Promise<number> {
+    const subjects = await this.subjectRepo.find({
+      where: { nivel, activo: true },
+    });
+    const subjectIds = subjects
+      .filter((s) =>
+        (s.grados ?? []).some((g) => gradosCoinciden(nivel, g, grado)),
+      )
+      .map((s) => s.id);
+
+    if (!subjectIds.length) return 0;
+
+    return this.competenciaRepo.count({
+      where: {
+        cursoId: In(subjectIds),
+        activo: true,
+      },
+    });
   }
 
   private async buildDiagnosticoReport(

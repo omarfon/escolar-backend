@@ -6,18 +6,18 @@ import {
   IsString,
   Max,
   Min,
-  ValidateIf,
 } from 'class-validator';
 import {
   DEFAULT_PAGE_SIZE,
-  EVALUATION_REPORT_TYPES,
+  ENROLLMENT_REPORT_TYPES,
+  ESTADOS_MATRICULA,
   EXPORT_FORMATS,
   MAX_PAGE_SIZE,
-  type EvaluationReportType,
+  type EnrollmentReportType,
   type ExportFormat,
-} from '../evaluation-reports.constants';
+} from '../enrollment-reports.constants';
 
-export class EvaluationReportQueryDto {
+export class EnrollmentReportQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -28,8 +28,8 @@ export class EvaluationReportQueryDto {
   @IsString()
   _tenant?: string;
 
-  @IsIn([...EVALUATION_REPORT_TYPES])
-  tipo: EvaluationReportType;
+  @IsIn([...ENROLLMENT_REPORT_TYPES])
+  tipo: EnrollmentReportType;
 
   @IsOptional()
   @Type(() => Number)
@@ -43,7 +43,7 @@ export class EvaluationReportQueryDto {
   @IsInt()
   @Min(1)
   @Max(4)
-  bimestre?: number;
+  periodo?: number;
 
   @IsOptional()
   @IsString()
@@ -53,32 +53,21 @@ export class EvaluationReportQueryDto {
   @IsString()
   ugel?: string;
 
-  @ValidateIf((o) => o.tipo !== 'promedios' || !!o.nivel)
   @IsOptional()
   @IsString()
   nivel?: string;
 
-  @ValidateIf((o) =>
-    ['promedios', 'notas', 'competencias', 'diagnostico', 'avance_evaluacion'].includes(
-      o.tipo,
-    ),
-  )
   @IsOptional()
   @IsString()
   grado?: string;
 
-  @ValidateIf((o) =>
-    ['promedios', 'notas', 'competencias', 'diagnostico', 'avance_evaluacion'].includes(
-      o.tipo,
-    ),
-  )
   @IsOptional()
   @IsString()
   seccion?: string;
 
   @IsOptional()
-  @IsString()
-  curso?: string;
+  @IsIn([...ESTADOS_MATRICULA])
+  estadoMatricula?: (typeof ESTADOS_MATRICULA)[number];
 
   @IsOptional()
   @IsString()
@@ -98,28 +87,30 @@ export class EvaluationReportQueryDto {
   pageSize?: number;
 }
 
-export class EvaluationReportExportQueryDto extends EvaluationReportQueryDto {
+export class EnrollmentReportExportQueryDto extends EnrollmentReportQueryDto {
   @IsIn([...EXPORT_FORMATS])
   format: ExportFormat;
 }
 
-export class CreateEvaluationReportJobDto extends EvaluationReportExportQueryDto {}
+export class CreateEnrollmentReportJobDto extends EnrollmentReportExportQueryDto {}
 
-export function normalizeReportQuery(dto: EvaluationReportQueryDto) {
+export function normalizeEnrollmentReportQuery(dto: EnrollmentReportQueryDto) {
   return {
     tipo: dto.tipo,
     anio: dto.anio,
-    bimestre: dto.bimestre,
+    periodo: dto.periodo,
     dre: dto.dre?.trim() || undefined,
     ugel: dto.ugel?.trim() || undefined,
     nivel: dto.nivel?.trim() || undefined,
     grado: dto.grado?.trim() || undefined,
     seccion: dto.seccion?.trim()?.toUpperCase() || undefined,
-    curso: dto.curso?.trim() || undefined,
+    estadoMatricula: dto.estadoMatricula,
     busqueda: dto.busqueda?.trim() || undefined,
     page: dto.page ?? 1,
     pageSize: Math.min(dto.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
   };
 }
 
-export type NormalizedReportQuery = ReturnType<typeof normalizeReportQuery>;
+export type NormalizedEnrollmentReportQuery = ReturnType<
+  typeof normalizeEnrollmentReportQuery
+>;

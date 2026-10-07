@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { CompetencyEvaluation } from '../competency-evaluations/entities/competency-evaluation.entity';
+import { CurriculumCompetencia } from '../curricula/entities/curriculum-competencia.entity';
 import { CurriculumSubject } from '../curricula/entities/curriculum-subject.entity';
 import { DiagnosticEvaluation } from '../diagnostic-evaluations/entities/diagnostic-evaluation.entity';
 import { Grade } from '../grades/entities/grade.entity';
@@ -24,6 +25,7 @@ import { EvaluationReportsService } from './evaluation-reports.service';
       CompetencyEvaluation,
       DiagnosticEvaluation,
       CurriculumSubject,
+      CurriculumCompetencia,
       EvaluationReportJob,
     ]),
     GradesModule,

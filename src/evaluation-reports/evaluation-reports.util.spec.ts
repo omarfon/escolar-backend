@@ -1,8 +1,10 @@
 import {
   buildCsv,
   csvCell,
+  isGroupHeaderRow,
   matchesBusqueda,
   paginateRows,
+  REPORT_ROW_GROUP_HEADER,
 } from './evaluation-reports.util';
 
 describe('evaluation-reports.util', () => {
@@ -30,6 +32,19 @@ describe('evaluation-reports.util', () => {
     );
     expect(csv).toContain('Col A');
     expect(csv).toContain('x');
+  });
+
+  it('buildCsv inserta fila de grupo de estudiante', () => {
+    const csv = buildCsv(
+      [{ key: 'curso', label: 'Curso' }],
+      [
+        { _tipoFila: REPORT_ROW_GROUP_HEADER, tituloGrupo: 'García Ana' },
+        { curso: 'Matemática' },
+      ],
+    );
+    expect(isGroupHeaderRow({ _tipoFila: REPORT_ROW_GROUP_HEADER })).toBe(true);
+    expect(csv).toContain('García Ana');
+    expect(csv).toContain('Matemática');
   });
 
   it('matchesBusqueda filtra por texto', () => {

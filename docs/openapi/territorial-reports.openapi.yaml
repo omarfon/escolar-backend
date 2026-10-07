@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info:
+  title: Territorial Reports API
+  version: 1.0.0
+paths:
+  /territorial-reports/context:
+    get:
+      summary: Contexto reporte territorial UGEL/DRE
+      tags: [TerritorialReports]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Contexto consolidado
+  /territorial-reports:
+    get:
+      summary: Reporte consolidado matrícula, asistencia y evaluación por IE
+      tags: [TerritorialReports]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: tipo
+          required: true
+          schema:
+            enum: [consolidado_ugel_dre]
+        - in: query
+          name: bimestre
+          schema: { type: integer, minimum: 1, maximum: 4 }
+        - in: query
+          name: mes
+          schema: { type: string, pattern: '^\\d{4}-\\d{2}$' }
+      responses:
+        '200':
+          description: Reporte paginado por institución
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

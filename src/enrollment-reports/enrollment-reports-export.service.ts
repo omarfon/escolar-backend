@@ -1,17 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import PDFDocument from 'pdfkit';
 import * as XLSX from 'xlsx';
-import type { ExportFormat } from './evaluation-reports.constants';
+import type { ExportFormat } from './enrollment-reports.constants';
 import {
   buildCsv,
   isGroupHeaderRow,
   type EvaluationReportResponse,
-  type ReportColumn,
-  type ReportRow,
-} from './evaluation-reports.util';
+} from '../evaluation-reports/evaluation-reports.util';
 
 @Injectable()
-export class EvaluationReportsExportService {
+export class EnrollmentReportsExportService {
   async buildBuffer(
     report: EvaluationReportResponse,
     format: ExportFormat,
@@ -41,13 +39,13 @@ export class EvaluationReportsExportService {
     const header = report.columns.map((c) => c.label);
     const data = report.items.map((row) => {
       if (isGroupHeaderRow(row)) {
-        return [row.tituloGrupo ?? row.estudiante ?? 'Estudiante'];
+        return [row.tituloGrupo ?? row.estudiante ?? 'Grupo'];
       }
       return report.columns.map((c) => row[c.key] ?? '');
     });
     const sheet = XLSX.utils.aoa_to_sheet([header, ...data]);
     const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, sheet, 'Reporte');
+    XLSX.utils.book_append_sheet(book, sheet, 'Matricula');
     const buffer = XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     return {
       buffer,
@@ -59,17 +57,13 @@ export class EvaluationReportsExportService {
 
   private async buildPdf(report: EvaluationReportResponse) {
     const buffer = await this.renderPdf(report.meta, report.columns, report.items);
-    return {
-      buffer,
-      mimeType: 'application/pdf',
-      extension: 'pdf',
-    };
+    return { buffer, mimeType: 'application/pdf', extension: 'pdf' };
   }
 
   private renderPdf(
     meta: EvaluationReportResponse['meta'],
-    columns: ReportColumn[],
-    rows: ReportRow[],
+    columns: EvaluationReportResponse['columns'],
+    rows: EvaluationReportResponse['items'],
   ): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {
       const doc = new PDFDocument({ size: 'A4', margin: 36, layout: 'landscape' });
@@ -79,7 +73,7 @@ export class EvaluationReportsExportService {
       doc.on('error', reject);
 
       const renderHeader = () => {
-        doc.fontSize(14).font('Helvetica-Bold').text('Reporte de evaluación', { align: 'center' });
+        doc.fontSize(14).font('Helvetica-Bold').text('Reporte de matrícula', { align: 'center' });
         doc.moveDown(0.3);
         doc.fontSize(9).font('Helvetica');
         const alcance = meta.alcance?.label ?? meta.institucion.nombre;
@@ -89,7 +83,7 @@ export class EvaluationReportsExportService {
             meta.institucion.dre ? `DRE ${meta.institucion.dre}` : '',
             meta.institucion.ugel ? `UGEL ${meta.institucion.ugel}` : '',
             `Año ${meta.anioEscolar}`,
-            meta.bimestre ? `Bimestre ${meta.bimestre}` : '',
+            meta.bimestre ? `Periodo ${meta.bimestre}` : '',
           ]
             .filter(Boolean)
             .join(' · '),
@@ -105,6 +99,7 @@ export class EvaluationReportsExportService {
       const colWidth = (doc.page.width - 72) / Math.max(columns.length, 1);
       const rowHeight = 12;
       const bottomLimit = doc.page.height - 40;
+      const tableWidth = doc.page.width - 72;
 
       const renderTableHeader = (y: number): number => {
         doc.font('Helvetica-Bold').fontSize(7);
@@ -121,8 +116,6 @@ export class EvaluationReportsExportService {
       let y = renderTableHeader(doc.y);
       doc.font('Helvetica').fontSize(7);
 
-      const tableWidth = doc.page.width - 72;
-
       for (const row of rows) {
         if (y + rowHeight > bottomLimit) {
           doc.addPage({ layout: 'landscape' });
@@ -132,7 +125,7 @@ export class EvaluationReportsExportService {
         }
 
         if (isGroupHeaderRow(row)) {
-          const title = String(row.tituloGrupo ?? row.estudiante ?? 'Estudiante');
+          const title = String(row.tituloGrupo ?? row.estudiante ?? 'Grupo');
           doc.rect(36, y - 1, tableWidth, rowHeight + 2).fill('#EEF2FF');
           doc.fillColor('#312E81').font('Helvetica-Bold').fontSize(8);
           doc.text(title, 40, y, { width: tableWidth - 8, lineBreak: false });

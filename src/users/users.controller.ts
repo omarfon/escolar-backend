@@ -14,6 +14,7 @@ import type { Request } from 'express';
 import { RequirePermiso } from '../auth/decorators/require-permiso.decorator';
 import { RequestUser } from '../auth/interfaces/request-user.interface';
 import { esSuperusuarioSiagie, institutionIdDeAlcance } from '../auth/siagie-access.util';
+import { esAdminNacional } from '../roles/roles-rbac-visibility.util';
 import { BulkImportUsersDto } from './dto/bulk-import-users.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { SetUserRoleAssignmentsDto } from './dto/user-role-assignment.dto';
@@ -77,6 +78,7 @@ export class UsersController {
     } : undefined, {
       siagie: esSuperusuarioSiagie(actor),
       institutionId: institutionIdDeAlcance(actor, req),
+      adminNacional: esAdminNacional(actor),
     });
   }
 

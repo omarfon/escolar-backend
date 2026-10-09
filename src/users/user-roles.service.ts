@@ -9,6 +9,7 @@ import { In, Repository } from 'typeorm';
 import { AuditLoggerService } from '../audit-logs/audit-logger.service';
 import { AuthCacheService } from '../auth/auth-cache.service';
 import { Role } from '../roles/entities/role.entity';
+import { esAdminNacional } from '../roles/roles-rbac-visibility.util';
 import { RolesService } from '../roles/roles.service';
 import {
   RoleAssignmentItemDto,
@@ -110,7 +111,7 @@ export class UserRolesService {
     userId: number,
     dto: SetUserRoleAssignmentsDto,
     actor?: { id: number; nombre: string; rol: string },
-    alcance?: { siagie: boolean; institutionId?: number },
+    alcance?: { siagie: boolean; institutionId?: number; adminNacional?: boolean },
   ): Promise<UserRoleAssignmentResponse[]> {
     await this.ensureUserExists(userId);
     await this.validateAssignments(dto.assignments, alcance);
@@ -209,7 +210,7 @@ export class UserRolesService {
 
   async validateAssignments(
     assignments: RoleAssignmentItemDto[],
-    alcance?: { siagie: boolean; institutionId?: number },
+    alcance?: { siagie: boolean; institutionId?: number; adminNacional?: boolean },
   ): Promise<void> {
     if (!assignments.length) {
       throw new BadRequestException('Debe asignar al menos un rol');
@@ -240,6 +241,12 @@ export class UserRolesService {
       for (const role of existingRoles) {
         if (role.codigo === 'SIAGIE') {
           throw new ForbiddenException('No puede asignar el rol SIAGIE.');
+        }
+        if (
+          !alcance.adminNacional &&
+          (role.codigo === 'UGEL' || role.codigo === 'DRE' || role.codigo === 'MINEDU')
+        ) {
+          throw new ForbiddenException(`No puede asignar el rol ${role.label}.`);
         }
         if (role.institutionId != null && role.institutionId !== alcance.institutionId) {
           throw new ForbiddenException(`El rol ${role.label} pertenece a otra sede.`);

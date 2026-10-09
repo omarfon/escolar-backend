@@ -187,11 +187,11 @@ export class StudentsService implements OnModuleInit {
     }
 
     const { nivel, grado } = splitGradoLabel(dto.gradoLabel);
+    const institutionId = await this.resolveInstitutionId(auditCtx);
     if (dto.fechaNac?.trim()) {
-      const institution = await this.institutionRepo.findOne({
-        where: {},
-        order: { id: 'ASC' },
-      });
+      const institution = institutionId
+        ? await this.institutionRepo.findOne({ where: { id: institutionId } })
+        : await this.institutionRepo.findOne({ where: {}, order: { id: 'ASC' } });
       const anioEscolar =
         Number(institution?.anio) || new Date().getFullYear();
       const edadCheck = validarEdadNormativa({
@@ -208,7 +208,6 @@ export class StudentsService implements OnModuleInit {
     }
     const estado = dto.estado ?? 'activo';
     const apellidos = resolveApellidos(dto);
-    const institutionId = await this.resolveInstitutionId(auditCtx);
     const entity = this.studentsRepository.create({
       nombre: dto.nombres.trim(),
       apellido: apellidos.apellido,

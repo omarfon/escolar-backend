@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
+import { RequestUser } from '../auth/interfaces/request-user.interface';
 import { AuditLoggerService } from '../audit-logs/audit-logger.service';
 import { UserRoleAssignment } from '../users/entities/user-role-assignment.entity';
 import { User } from '../users/entities/user.entity';
@@ -8,11 +9,20 @@ import { Permission } from './entities/permission.entity';
 import { RolePermission } from './entities/role-permission.entity';
 import { Role } from './entities/role.entity';
 import { PERMISSION_SECTIONS } from './roles.constants';
+import {
+  catalogoPermisosParaGestion,
+  filtrarPermisosParaRespuesta,
+  fusionarPermisosAlGuardar,
+  puedeVerCatalogoRbacCompleto,
+  rolVisibleParaGestion,
+  ViewerIdentity,
+} from './roles-rbac-visibility.util';
 import { esAdministradorDeSede } from './sede-admin-role';
 
 export interface RoleScope {
   siagie: boolean;
   institutionId?: number;
+  viewer?: ViewerIdentity;
 }
 
 export interface RoleResponse {
@@ -50,11 +60,24 @@ export class RolesService {
     private readonly auditLogger: AuditLoggerService,
   ) {}
 
-  async findAll(institutionId?: number): Promise<{ roles: RoleResponse[]; catalog: typeof PERMISSION_SECTIONS }> {
-    const roles = await this.roleRepo.find({
-      where: institutionId === undefined ? {} : { institutionId },
-      order: { orden: 'ASC' },
-    });
+  async findAll(
+    institutionId?: number,
+    viewer?: Pick<RequestUser, 'roles' | 'rolPrincipal'> | null,
+  ): Promise<{ roles: RoleResponse[]; catalog: typeof PERMISSION_SECTIONS }> {
+    const roles =
+      institutionId === undefined
+        ? await this.roleRepo.find({ order: { orden: 'ASC' } })
+        : institutionId < 1
+          ? []
+          : await this.roleRepo.find({
+              where: [{ institutionId: IsNull() }, { institutionId }],
+              order: { orden: 'ASC' },
+            });
+
+    const catalogoCompleto = puedeVerCatalogoRbacCompleto(viewer);
+    const rolesVisibles = roles.filter((role) =>
+      rolVisibleParaGestion(role.codigo, role.institutionId ?? null, institutionId, viewer),
+    );
     const allRolePermissions = await this.rolePermissionRepo.find({
       relations: { permission: true, role: true },
     });
@@ -86,8 +109,16 @@ export class RolesService {
     const nombrePorId = new Map(instituciones.map((row) => [Number(row.id), row.nombre]));
 
     return {
-      roles: roles.map((role) => this.toResponse(role, permisosByRole.get(role.codigo) ?? [], countMap.get(role.codigo) ?? 0, nombrePorId)),
-      catalog: PERMISSION_SECTIONS,
+      roles: rolesVisibles.map((role) => {
+        const permisos = permisosByRole.get(role.codigo) ?? [];
+        return this.toResponse(
+          role,
+          filtrarPermisosParaRespuesta(permisos, catalogoCompleto),
+          countMap.get(role.codigo) ?? 0,
+          nombrePorId,
+        );
+      }),
+      catalog: catalogoPermisosParaGestion(catalogoCompleto),
     };
   }
 
@@ -177,12 +208,18 @@ export class RolesService {
     this.assertPuedeAdministrar(role, scope);
 
     const permisosAntes = await this.getPermissionsByRoleCodigo(codigo);
+    const catalogoCompleto = puedeVerCatalogoRbacCompleto(scope?.viewer);
+    const permisosEfectivos = fusionarPermisosAlGuardar(
+      permisos,
+      permisosAntes,
+      catalogoCompleto,
+    );
 
     const permissions = await this.permissionRepo.find({
-      where: { codigo: In(permisos) },
+      where: { codigo: In(permisosEfectivos) },
     });
 
-    const invalid = permisos.filter(
+    const invalid = permisosEfectivos.filter(
       (p) => !permissions.some((row) => row.codigo === p),
     );
     if (invalid.length) {

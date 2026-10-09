@@ -16,7 +16,7 @@ export class RolesController {
 
   @Get()
   findAll(@Req() req: AuthRequest) {
-    return this.rolesService.findAll(institutionIdDeAlcance(req.user, req));
+    return this.rolesService.findAll(institutionIdDeAlcance(req.user, req), req.user);
   }
 
   @Post()
@@ -59,6 +59,7 @@ export class RolesController {
       {
         siagie: esSuperusuarioSiagie(actor),
         institutionId: institutionIdDeAlcance(actor, req),
+        viewer: actor,
       },
     );
   }
